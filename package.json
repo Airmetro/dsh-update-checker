@@ -1,6 +1,6 @@
 {
   "name": "dsh-update-checker",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Auto-check DeepSeek Harness for new releases and notify the user in the Web GUI with a locale-aware banner.",
   "type": "module",
   "main": "lib/index.js",
