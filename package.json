@@ -1,6 +1,6 @@
 {
   "name": "dsh-update-checker",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Auto-check DeepSeek Harness for new releases and notify the user in the Web GUI with a locale-aware banner.",
   "type": "module",
   "main": "lib/index.js",
@@ -11,6 +11,7 @@
   },
   "files": [
     "lib",
+    "scripts",
     "README.md",
     "LICENSE",
     "cordis.patch.yml"
