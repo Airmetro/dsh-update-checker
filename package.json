@@ -1,0 +1,50 @@
+{
+  "name": "dsh-update-checker",
+  "version": "1.0.0",
+  "description": "Auto-check DeepSeek Harness for new releases and notify the user in the Web GUI with a locale-aware banner.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Airmetro/dsh-update-checker.git"
+  },
+  "homepage": "https://github.com/Airmetro/dsh-update-checker",
+  "bugs": {
+    "url": "https://github.com/Airmetro/dsh-update-checker/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "update",
+    "notify"
+  ]
+}
