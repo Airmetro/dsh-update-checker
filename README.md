@@ -70,6 +70,7 @@ All paths are **auto-detected at runtime — nothing is hardcoded**, so the same
 
 ## Changelog
 
+- **v1.2.3** — Plugin banner UX overhaul: per-plugin update now shows "{name} updated to vX.Y.Z" (no longer misleading "all up to date"), the banner stays visible after acknowledging a partial update (still lists the remaining updatable plugins instead of vanishing), long plugin/result lists scroll inside a viewport-height-capped area with styled scrollbars, batch update shows live progress "Updating {name}… (6/15)", acknowledging a fully-completed batch dismisses the banner cleanly, and both banners are draggable by their title/blank area.
 - **v1.2.2** — One-click update now runs `npm install -g @deepseek-ai/dsh@latest` with `--allow-scripts` for the five native-dependency packages (npm 11 requirement), invoked through `process.execPath` + the bundled `npm-cli.js` (no PATH dependence). Fixes the previous non-`-g` `npm install` which, on machines where dsh is installed globally (global prefix without a `package.json`), would treat the whole global `node_modules` as extraneous and prune it.
 - **v1.2.1** — README: add a Features section (full update lifecycle overview).
 - **v1.2.0** — Auto-detect all paths (profile dir, `$DSH_HOME`, composition file, deploy root, restart launcher) from the plugin's own install location; merge the former standalone `dsh-plugin-checker` plugin-update capability.
