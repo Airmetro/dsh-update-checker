@@ -2,6 +2,16 @@
 
 A permanent Cordis plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI that **auto-checks for new DeepSeek Harness releases AND installed third-party plugin updates** (the former standalone `dsh-plugin-checker` was merged in v1.1.0), asks the user, and one-click updates with success/failure feedback.
 
+## Features
+
+- **Full update lifecycle** — check, backup, update, and restart, all in one plugin.
+- **Main program check** — compares the installed `@deepseek-ai/dsh` version against the npm latest (semver-aware, pre-release handled).
+- **Third-party plugin check** — scans installed non-official plugins (composition rows + `dsh` manifest, layout-agnostic) and compares each against npm latest.
+- **In-GUI banner** — locale-aware (zh/en follows the DSH UI language), states update / up-to-date / failure, with a "don't remind me" suppression flag.
+- **One-click update with safety** — backs up the deployment lockfile + `@deepseek-ai` version manifests before installing, so a failed upgrade can be rolled back; plugin updates install in a temp dir and copy in (never touches unrelated packages in `profiles/node_modules`).
+- **Restart with watchdog** — restarts the dsh web service via a detached watchdog script (kills the port listener, relaunches the launcher, retries until the port recovers).
+- **Zero-config portability** — profile dir / `$DSH_HOME` / composition file are derived from the plugin's own install location; the deployment root is resolved via junction `realpath` with `DSH_DEPLOY_ROOT` / `process.cwd()` fallback. Works on any machine without editing code.
+
 - **Host half** (`lib/index.js`) registers HTTP routes:
   - `GET /dsh-update-checker/status.json` — fetches the latest `@deepseek-ai/dsh` version from the npm registry, reads the locally installed version (from the deployment's `node_modules`), compares them with semver semantics, and returns a JSON status (including the persisted `suppressUpToDate` flag).
   - `POST /dsh-update-checker/suppress` — persists the "don't remind me again" flag for the up-to-date banner (requires `{ "confirm": true }`).
