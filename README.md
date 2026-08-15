@@ -1,5 +1,7 @@
 # dsh-update-checker
 
+English | [中文](README.zh.md)
+
 A permanent Cordis plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI that **auto-checks for new DeepSeek Harness releases AND installed third-party plugin updates** (the former standalone `dsh-plugin-checker` was merged in v1.1.0), asks the user, and one-click updates with success/failure feedback.
 
 ## Features
