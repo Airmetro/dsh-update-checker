@@ -6,7 +6,7 @@ A permanent Cordis plugin for the [DeepSeek Harness](https://github.com/deepseek
   - `GET /dsh-update-checker/status.json` — fetches the latest `@deepseek-ai/dsh` version from the npm registry, reads the locally installed version (from the deployment's `node_modules`), compares them with semver semantics, and returns a JSON status (including the persisted `suppressUpToDate` flag).
   - `POST /dsh-update-checker/suppress` — persists the "don't remind me again" flag for the up-to-date banner (requires `{ "confirm": true }`).
   - `POST /dsh-update-checker/update` — **complete update**: backs up the deployment lockfile + @deepseek-ai version manifests, runs `npm install @deepseek-ai/dsh@latest` in the deployment root, then defensively syncs changed @deepseek-ai packages into `$DSH_HOME/profiles/node_modules` (skipped for junction-linked packages, which the running Web app resolves through). Requires `{ "confirm": true }`; supports `{ "dry": true }` to preview without executing.
-  - `POST /dsh-update-checker/restart` — restarts the dsh web service (spawns a detached helper that kills the port-3080 listener and relaunches `start-dsh.cmd`). Requires `{ "confirm": true }`.
+  - `POST /dsh-update-checker/restart` — restarts the dsh web service (spawns a PowerShell helper that kills the port listener and relaunches `<deploy-root>/start-dsh.cmd`; the port and launcher path are derived at runtime). Requires `{ "confirm": true }`.
 - **Client half** (`lib/client.js`) is a web module (ModuleLoader format) that registers a cell in the root-scoped `shell.overlay` slot. On page load it checks once, then re-checks every 6 hours:
   - an **update banner** when a new version is available (立即更新 / 重新检查 / 知道了),
   - an **up-to-date banner** otherwise (确定 = dismiss this session, 不再提示 = persist suppression via the Host).
@@ -36,10 +36,11 @@ npm i dsh-update-checker        # in the profile, or copy the package directory 
 
 Then let patch HMR apply it (or restart `dsh web`) and reload the page.
 
-## Configuration
+## Configuration & portability
 
-- The deployment root is detected via `process.cwd()` (the `start-dsh.cmd` launcher `cd`s into the deployment directory before starting). If you start `dsh` from somewhere else, edit `DEPLOY_ROOT_CANDIDATES` at the top of `lib/index.js` and add your deployment directory.
-- The restart helper targets port `3080` and the `start-dsh.cmd` launcher path — adjust `WEB_PORT` / the `RESTART_HELPER` string if your deployment differs.
+- **Deployment root** is detected via `process.cwd()` (each machine's launcher `cd`s into its deployment directory before starting `dsh`). If you start `dsh` from somewhere else, edit `DEPLOY_ROOT_CANDIDATES` at the top of `lib/index.js` and add your deployment directory.
+- **Restart** is self-adapting across machines: the web port is read from the running `webServer.port`, and the launcher path is derived from the detected deployment root (`<root>/start-dsh.cmd`). No machine-specific paths are hardcoded in the restart flow.
+- Persisted state (suppression flag, backups) lives under `$DSH_HOME` (`~/.dsh`) — machine-independent.
 
 ## Notes
 
