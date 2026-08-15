@@ -62,6 +62,14 @@ All paths are **auto-detected at runtime — nothing is hardcoded**, so the same
 - **Restart launcher**: self-adapting — probes common names (`start-dsh.cmd`, `启动 dsh.bat`, `start-dsh.bat`, …) under the detected deployment root; the web port is read from the running `webServer.port`. No machine-specific paths are hardcoded in the restart flow.
 - Persisted state (suppression flag, backups) lives under the detected `$DSH_HOME` — machine-independent.
 
+## Platform & install-layout support
+
+- **Detection (the checks)** is layout-agnostic: paths are derived from the plugin's own install location and work on any machine (see "Configuration & portability").
+- **One-click update & restart are currently tuned for the layout they were developed on:**
+  - **Windows only** — the restart flow spawns PowerShell (`taskkill` + a `.cmd`/`.bat` launcher script) and the watchdog script is PowerShell.
+  - **npm global install** — the main-program update runs `npm install -g @deepseek-ai/dsh@latest` (with `--allow-scripts` for the native-dependency packages). This is correct when `@deepseek-ai/dsh` is installed globally (the setup this plugin was developed on). On a deployment where dsh lives in a local `node_modules` (not `-g`), the update command must be adapted — and **must not** be run as a plain `npm install` in the deployment root, because npm may treat the existing packages as extraneous and prune them.
+- On other platforms/layouts the banners and version checks still work, but the update/restart buttons will fail or need code adaptation. Linux/macOS support is a natural next step.
+
 ## Notes
 
 - **Host code changes require a service restart to take effect** (the loader caches imported modules); client code changes are picked up by the client-modules HMR watch and apply on the next page refresh.
@@ -69,6 +77,8 @@ All paths are **auto-detected at runtime — nothing is hardcoded**, so the same
 - Update safety: a backup (deployment `package-lock.json` + both @deepseek-ai version manifests) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` before `npm install` runs, so a failed upgrade can be rolled back.
 
 ## Changelog
+
+- **Unreleased** — Remove machine-specific paths from the published files (`cordis.patch.yml` no longer references a local source directory; `scripts/restart-service.ps1` no longer hardcodes launcher/working-dir/log paths — it now takes `-Port/-Launcher/-WorkingDir/-Log` parameters with `DSH_RESTART_*` environment-variable fallbacks, matching the watchdog flow). Add unit tests for the pure helpers (semver comparison, sync planning, tar extraction incl. path-escape safety) by exposing them as named ESM exports from `lib/index.js`; run them with `npm test` (Node built-in test runner, no third-party deps). Document the platform/install-layout support above.
 
 - **v1.3.1** — GitHub cross-check for plugin updates: read each plugin's `repository` field and query `api.github.com/releases/latest`, cross-verify against npm (target version = the higher of the two, GitHub preferred as download source on ties), support plugins that exist only on GitHub (download via `codeload` tarball, backup + replace), show the update source (`[GH]` / `[GH/npm]`) in settings. If GitHub is unreachable it silently falls back to npm; if both sources fail the plugin reports a combined error (timeout included). Adds fetch timeouts (20s queries / 120s download).
 - **v1.3.0** — Add a "检查更新" (Update Check) settings page: main-program and per-plugin version comparison with yellow/green status lamps, in-page one-click update + per-plugin update (serial queue with live progress "1/N" and per-row realtime refresh), independent re-check buttons, floating-banner / notification toggle switches (styled sliders), a single "don't remind" that suppresses both banners and is re-enableable from settings, draggable banners, and a plugin-update lock with a 10-minute takeover timeout (no more permanent 409 when an npm install hangs).
@@ -79,10 +89,11 @@ All paths are **auto-detected at runtime — nothing is hardcoded**, so the same
 
 ## Development
 
-- `lib/index.js` — Host half: plain ESM, depends only on Node built-ins. No build step.
+- `lib/index.js` — Host half: plain ESM, depends only on Node built-ins. No build step. The pure helpers (`parseVersion`, `compareVersions`, `tagToVersion`, `parseGhRepo`, `planSyncFromMaps`, `extractTarGzToDir`, `truncate`) are exported as named ESM exports for unit testing.
 - `lib/client.js` — Client half: plain JS, `window.__ModuleLoader__` format, requires only `react`. No build step.
-- `scripts/test-host-apply.mjs` — isolation test that drives `apply()` with a fake context.
-- `scripts/restart-service.ps1` — manual service restart helper (run with `-ExecutionPolicy Bypass`).
+- Unit tests: `npm test` (alias for `node --test scripts/`, Node ≥ 20 with the built-in test runner, no third-party deps). Coverage: semver comparison & tag/repo parsing (`unit-semver.test.mjs`), sync planning (`unit-sync.test.mjs`), tar extraction incl. path-escape safety (`unit-tar.test.mjs`), plus the host `apply()` smoke test.
+- `scripts/test-host-apply.mjs` — isolation test that drives `apply()` with a fake context (also picked up by `npm test`).
+- `scripts/restart-service.ps1` — manual service restart helper (run with `-ExecutionPolicy Bypass`); pass `-Launcher` (or set `DSH_RESTART_LAUNCHER`) plus optional `-Port/-WorkingDir/-Log`.
 
 ## License
 

@@ -1,5 +1,4 @@
 # dsh-update-checker bundle patch: mount the plugin as a single composition row.
-# 源码位于 D:\AI办公\dsh-update-checker，安装副本在 $DSH_HOME/profiles/node_modules。
 # 通过任意 cordis.patch.yml 层应用此行即可装载。
 - insert:
     - id: dsh-update-checker

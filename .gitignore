@@ -1,0 +1,2 @@
+# 本机开发脚本（含机器特定路径断言，不进仓库）
+verify-autodetect.mjs
