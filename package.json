@@ -1,6 +1,6 @@
 {
   "name": "dsh-update-checker",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Auto-check DeepSeek Harness and third-party plugin updates, notify in the Web GUI, one-click update with restart watchdog.",
   "type": "module",
   "scripts": {

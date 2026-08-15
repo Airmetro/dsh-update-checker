@@ -75,8 +75,13 @@ test('parseGhRepo: 无法解析返回 null', () => {
   assert.equal(parseGhRepo({}), null);
 });
 
-test('parseGhRepo: 仓库名含点号只取首段（既有限制，勿改断言）', () => {
-  // 正则 [^/.]+ 在点号处截断 —— 这是已知限制，测试用于固化现状；
-  // 若未来修复（允许点号），需同步更新本断言。
-  assert.equal(parseGhRepo('https://github.com/my-org/my.plugin'), 'my-org/my');
+test('parseGhRepo: 仓库名含点号保留（不再截断）', () => {
+  assert.equal(parseGhRepo('https://github.com/my-org/my.plugin'), 'my-org/my.plugin');
+  assert.equal(parseGhRepo('https://github.com/a/b.c.d'), 'a/b.c.d');
+});
+
+test('parseGhRepo: .git 后缀被剥除（含带尾随路径）', () => {
+  assert.equal(parseGhRepo('https://github.com/a/b.git'), 'a/b');
+  assert.equal(parseGhRepo('a/b.git'), 'a/b');
+  assert.equal(parseGhRepo('https://github.com/a/b.git/tree/main'), 'a/b');
 });
