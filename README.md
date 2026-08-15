@@ -41,9 +41,16 @@ Then let patch HMR apply it (or restart `dsh web`) and reload the page.
 
 ## Configuration & portability
 
-- **Deployment root** is detected via `process.cwd()` (each machine's launcher `cd`s into its deployment directory before starting `dsh`). If you start `dsh` from somewhere else, edit `DEPLOY_ROOT_CANDIDATES` at the top of `lib/index.js` and add your deployment directory.
-- **Restart** is self-adapting across machines: the web port is read from the running `webServer.port`, and the launcher path is derived from the detected deployment root (`<root>/start-dsh.cmd`). No machine-specific paths are hardcoded in the restart flow.
-- Persisted state (suppression flag, backups) lives under `$DSH_HOME` (`~/.dsh`) — machine-independent.
+All paths are **auto-detected at runtime — nothing is hardcoded**, so the same package works on any machine:
+
+- **Plugin / profile directory** (`$DSH_HOME/profiles/node_modules`): derived from the plugin's own install location (`import.meta.url`), walking up to the enclosing `node_modules`. No configuration needed.
+- **`$DSH_HOME`**: derived as the parent of the `profiles` root (state file, backups, and restart log all live there).
+- **Composition file** (`cordis.patch.yml`): defaults to `$DSH_HOME/profiles/web/cordis.patch.yml`; if absent, any other `cordis.patch.yml` under `$DSH_HOME/profiles/` containing the plugin id is used.
+- **Deployment root**: detected in two strategies, in order:
+  1. **Junction resolution** — on machines where `profiles/node_modules/@deepseek-ai/dsh` is a junction (the common "save C-drive" setup), `realpath()` yields `<deploy-root>/node_modules/@deepseek-ai/dsh`, so the deployment root is derived automatically.
+  2. **Fallback candidates** — environment variable `DSH_DEPLOY_ROOT`, then `process.cwd()` (launchers usually `cd` into the deployment directory). To point elsewhere, set `DSH_DEPLOY_ROOT` or append to `DEPLOY_ROOT_CANDIDATES` at the top of `lib/index.js`.
+- **Restart launcher**: self-adapting — probes common names (`start-dsh.cmd`, `启动 dsh.bat`, `start-dsh.bat`, …) under the detected deployment root; the web port is read from the running `webServer.port`. No machine-specific paths are hardcoded in the restart flow.
+- Persisted state (suppression flag, backups) lives under the detected `$DSH_HOME` — machine-independent.
 
 ## Notes
 

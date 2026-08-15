@@ -23,9 +23,22 @@ try {
   const result = plugin.apply(ctx);
   if (result && typeof result.then === "function") await result;
   console.log("apply OK; routes registered:", registrations.map((r) => r.kind + " " + r.path).join(", "));
-  if (registrations.length !== 4) {
-    console.error("EXPECTED 4 ROUTES, GOT", registrations.length);
+  const EXPECTED = [
+    "/dsh-update-checker/status.json",
+    "/dsh-update-checker/suppress",
+    "/dsh-update-checker/update",
+    "/dsh-update-checker/restart",
+    "/dsh-update-checker/plugins.json",
+    "/dsh-update-checker/plugin-update",
+    "/dsh-update-checker/plugin-suppress",
+  ];
+  const got = registrations.map((r) => r.path);
+  const missing = EXPECTED.filter((p) => !got.includes(p));
+  if (missing.length) {
+    console.error("MISSING ROUTES:", missing.join(", "));
     process.exitCode = 1;
+  } else {
+    console.log(`OK   all ${EXPECTED.length} routes registered`);
   }
 } catch (err) {
   console.error("APPLY THREW:", err && err.stack ? err.stack : err);
