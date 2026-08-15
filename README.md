@@ -68,6 +68,12 @@ All paths are **auto-detected at runtime — nothing is hardcoded**, so the same
 - The update/restart/suppress POST routes are guarded by `{ "confirm": true }` so a stray request cannot trigger an install or a restart.
 - Update safety: a backup (deployment `package-lock.json` + both @deepseek-ai version manifests) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` before `npm install` runs, so a failed upgrade can be rolled back.
 
+## Changelog
+
+- **v1.2.2** — One-click update now runs `npm install -g @deepseek-ai/dsh@latest` with `--allow-scripts` for the five native-dependency packages (npm 11 requirement), invoked through `process.execPath` + the bundled `npm-cli.js` (no PATH dependence). Fixes the previous non-`-g` `npm install` which, on machines where dsh is installed globally (global prefix without a `package.json`), would treat the whole global `node_modules` as extraneous and prune it.
+- **v1.2.1** — README: add a Features section (full update lifecycle overview).
+- **v1.2.0** — Auto-detect all paths (profile dir, `$DSH_HOME`, composition file, deploy root, restart launcher) from the plugin's own install location; merge the former standalone `dsh-plugin-checker` plugin-update capability.
+
 ## Development
 
 - `lib/index.js` — Host half: plain ESM, depends only on Node built-ins. No build step.
