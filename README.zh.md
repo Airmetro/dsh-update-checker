@@ -35,9 +35,15 @@
 该包是一个 [profile bundle](https://github.com/deepseek-ai/deepseek-harness)（其清单声明了 `dsh.bundle.patch`）。
 
 ```bash
-# 1) 把包安装到 profile 能解析的位置
-#    （扁平目录回退：$DSH_HOME/profiles/node_modules）
-npm i dsh-update-checker        # 在 profile 目录里安装，或手动拷贝包目录
+# 1) 把包放进 $DSH_HOME/profiles/node_modules/，让 profile 能解析到它。
+#    ⚠️ 绝不要在 $DSH_HOME/profiles 目录里直接跑 `npm install`——该目录没有
+#    package.json，npm 会把整个 node_modules 判为多余并清空（数据丢失）。
+#
+#    安全方式 A —— 临时目录安装后只拷贝本包：
+npm i dsh-update-checker --prefix <temp-dir> --no-save
+cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules/
+#
+#    安全方式 B —— 手动拷贝包目录（git clone 或解包 tarball 后整目录拷入）。
 
 # 2) 在 $DSH_HOME/profiles/web/cordis.patch.yml 增加组合行
 ```
@@ -50,6 +56,8 @@ npm i dsh-update-checker        # 在 profile 目录里安装，或手动拷贝�
 ```
 
 然后让 patch HMR 生效（或重启 `dsh web`）并刷新页面。
+
+> 图文安装步骤与常见问题：见 [docs/INSTALL.md](docs/INSTALL.md)。
 
 ## 配置与可移植性
 

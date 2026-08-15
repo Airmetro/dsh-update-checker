@@ -35,9 +35,15 @@ The banner follows the DSH UI language through the client `locale` service (`@de
 The package is a [profile bundle](https://github.com/deepseek-ai/deepseek-harness) (its manifest declares `dsh.bundle.patch`).
 
 ```bash
-# 1) install the package where the profile can resolve it
-#    (the flat $DSH_HOME/profiles/node_modules fallback)
-npm i dsh-update-checker        # in the profile, or copy the package directory manually
+# 1) put the package into $DSH_HOME/profiles/node_modules/ so the profile can resolve it.
+#    ⚠️ Do NOT run `npm install` directly inside $DSH_HOME/profiles — it has no
+#    package.json and npm would prune the entire node_modules (data loss).
+#
+#    Safe option A — install in a temp dir, then copy only this package:
+npm i dsh-update-checker --prefix <temp-dir> --no-save
+cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules/
+#
+#    Safe option B — copy the package directory manually (from a git clone or tarball).
 
 # 2) add the row to $DSH_HOME/profiles/web/cordis.patch.yml
 ```
@@ -50,6 +56,8 @@ npm i dsh-update-checker        # in the profile, or copy the package directory 
 ```
 
 Then let patch HMR apply it (or restart `dsh web`) and reload the page.
+
+> Step-by-step guide with troubleshooting (中文): [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Configuration & portability
 
