@@ -27,10 +27,16 @@ try {
     "/dsh-update-checker/status.json",
     "/dsh-update-checker/suppress",
     "/dsh-update-checker/update",
+    "/dsh-update-checker/rollback",
+    "/dsh-update-checker/backups.json",
     "/dsh-update-checker/restart",
+    "/dsh-update-checker/restart-status.json",
     "/dsh-update-checker/plugins.json",
     "/dsh-update-checker/plugin-update",
+    "/dsh-update-checker/plugin-rollback",
     "/dsh-update-checker/plugin-suppress",
+    "/dsh-update-checker/settings.json",
+    "/dsh-update-checker/settings",
   ];
   const got = registrations.map((r) => r.path);
   const missing = EXPECTED.filter((p) => !got.includes(p));
