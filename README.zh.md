@@ -98,6 +98,15 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.1** — 更新链路与备份管理完善（本机实测验证）：
+  - **主程序更新不再超时/不再假成功**：改用**显式版本号**（`@latest` 每次全量解析本机实测 145s 易超时；显式版本走缓存 ~1s）；破解 npm 11 的 **reify 快速路径跳过**问题（npm 会把 spec/隐藏 lockfile 先推进到目标、却不替换实际目录 → 回读校验必失败）：安装后回读不符时自动**改名目录强制重装**（`forceReifyMain`，实测 2s 完成）。
+  - **主程序更新进度条**：`/update` 同步执行期间实时写进度状态文件（`update-progress.json`），npm 安装用 `--loglevel=http` 逐包计数（`已解析 x/420 个包`），分阶段（检查→dry-run→备份→安装→校验→同步→完成）；横幅与设置页都显示进度条。
+  - **插件更新 GitHub→npm 回退**：GitHub 源为源码仓库（无构建产物 ENOBUILD / tag 不符 ETAGMISMATCH / 下载超限 ETOOBIG）且插件在 npm 上存在时，自动回退 npm 通道（dshmarket 实测更新成功）。
+  - **扫描按包名去重**：同一插件出现在多个物理位置（顶层 + pnpm hoisted 子层）只列一条。
+  - **更新状态跨界面同步**：横幅/设置页共享"更新中"状态（模块级订阅），关闭设置再打开不丢、互相同步。
+  - **主程序横幅"知道了"可关闭**：有新版时点"知道了"本轮横幅直接关闭（此前有更新时 dismissed 被忽略导致点了没反应）。
+  - **备份管理**：设置页新增"恢复与备份"卡片——备份文件夹**可配置**（默认 `$DSH_HOME/dsh-update-checker-backups`，插件备份统一存 `<root>/plugins`，旧位置自动迁移）；**Windows 原生文件夹选择对话框**（TopMost + 任务栏，不被其它窗口盖住）+ **打开文件夹**按钮；**删除备份文件缓存**按钮（确认后删除全部备份，回滚按钮随之消失；手动删单个插件备份则仅该插件的回滚按钮消失）。
+  - **操作日志落盘**：update/rollback/plugin-update/restart 等关键节点与 npm 输出写入 `$DSH_HOME/dsh-update-checker-ops.log`（报错可追溯）。
 - **v1.4.0** — 缺陷清单全量修复：
   - **GitHub 通道本机可用**（R31）：对 GitHub 域使用专用 HTTPS 客户端（`rejectUnauthorized:false` 仅限 github.com / *.githubusercontent.com，兼容本地 S302 代理自签名证书），带重定向跟随、下载大小上限与超时；codeload 解压前校验构建产物（`main`/`exports` 入口存在、tag 与 `package.json` 版本一致），杜绝源码仓库覆盖可运行插件；GitHub 源插件在解压后阶段安装其 dependencies（依赖同样做版本核对与原生构建）。
   - **插件依赖版本核对**：新 `package.json` 的 dependencies/optionalDependencies 中，已装版本不满足范围时先备份旧依赖再替换（`satisfies` 自带与 npm semver 一致的子集实现，1110 例交叉校验 0 偏差）。
