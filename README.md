@@ -76,6 +76,9 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.3** — Fix two issues reported from the field:
+  - `NPM_CLI` resolution now supports multiple node prefix layouts (incl. the standard Linux `<prefix>/lib/node_modules`), and `readNpmMajor` reads npm's version from the resolved location — plugin updates work on standard Linux layouts.
+  - Optional GitHub API token authentication (`GH_TOKEN` / `GITHUB_TOKEN` env var, set per machine): only `api.github.com` gets `Authorization: Bearer`, raising the anonymous 60/h rate limit to 5000/h; codeload tarball downloads stay anonymous. The 403 error text now distinguishes rate limiting from an invalid token.
 - **v1.4.1** — Update pipeline & backup management hardening:
   - Main-program update no longer times out / fakes success: explicit version instead of `@latest` (fast path ~1s vs full re-resolve ~145s), plus `forceReifyMain` (rename dir + reinstall) to work around npm 11's reify fast-path skip.
   - Live progress bar for main-program update (`update-progress.json`, staged phases), shown in banner and settings.

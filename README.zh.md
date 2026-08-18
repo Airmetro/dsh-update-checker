@@ -76,6 +76,9 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.3** — 修复两个现场反馈的问题：
+  - `NPM_CLI` 定位支持多种 node 前缀布局（含标准 Linux `<prefix>/lib/node_modules`），`readNpmMajor` 从解析到的 npm 位置读版本号——标准 Linux 布局下插件更新可用。
+  - GitHub API 可选 token 认证（`GH_TOKEN` / `GITHUB_TOKEN` 环境变量，每台机器各自设置）：仅 `api.github.com` 带 `Authorization: Bearer`，匿名 60/h 限额提升到 5000/h；codeload 下载保持匿名。403 文案区分"限速"与"token 无效"。
 - **v1.4.1** — 更新链路与备份管理完善：
   - 主程序更新不再超时/不再假成功：改用显式版本号（走缓存 ~1s，`@latest` 全量解析本机实测 ~145s），并加 `forceReifyMain`（改名目录强制重装）破解 npm 11 的 reify 快速路径跳过问题。
   - 主程序更新实时进度条（`update-progress.json`，分阶段显示），横幅与设置页都可见。
