@@ -76,6 +76,9 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.4** — Fix two community-reported issues:
+  - **No more false update flags for monorepo subpackages** ([#3](https://github.com/Airmetro/dsh-update-checker/issues/3)): when checking the GitHub source, the release tag is only trusted if the `name` in the repo-root `package.json` matches the locally installed plugin name. A main-repo tag (monorepo root name ≠ subpackage name) is treated as unrelated to the plugin, so only the npm source is used — no more perpetual yellow light followed by a failed update (e.g. `@tt-a1i/archify-dsh`, `@vectorize-io/hindsight-coding-agents`). If the root package name cannot be fetched (rate limit / network), the previous behavior is kept so GitHub-only plugins are not affected.
+  - **Banner no longer hidden behind the session header / context-injection chips** ([#5](https://github.com/Airmetro/dsh-update-checker/issues/5)): the `shell.overlay` container sits in a low stacking context, so a child `z-index` cannot lift the banner above it. The whole overlay layer is now raised above headers/chips (≤100) and below full-screen overlays (1000), and the banner's initial position is moved down clear of the header area.
 - **v1.4.3** — Fix two issues reported from the field:
   - `NPM_CLI` resolution now supports multiple node prefix layouts (incl. the standard Linux `<prefix>/lib/node_modules`), and `readNpmMajor` reads npm's version from the resolved location — plugin updates work on standard Linux layouts.
   - Optional GitHub API token authentication (`GH_TOKEN` / `GITHUB_TOKEN` env var, set per machine): only `api.github.com` gets `Authorization: Bearer`, raising the anonymous 60/h rate limit to 5000/h; codeload tarball downloads stay anonymous. The 403 error text now distinguishes rate limiting from an invalid token.

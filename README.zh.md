@@ -76,6 +76,9 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.4** — 修复两个社区反馈的问题：
+  - **monorepo 子包不再误报更新**（[#3](https://github.com/Airmetro/dsh-update-checker/issues/3)）：GitHub 源检查时，release tag 对应仓库根 `package.json` 的 `name` 必须与本地插件名一致才采信该 tag；主仓库 tag（monorepo 根包名 ≠ 子包名）视为与本插件无关，仅保留 npm 源，避免"黄灯常驻 → 点更新失败"的死循环（如 `@tt-a1i/archify-dsh`、`@vectorize-io/hindsight-coding-agents`）。`ghName` 获取失败（限流/网络）时保持原行为，不影响 GitHub-only 插件。
+  - **横幅不再被会话顶栏/上下文注入遮挡**（[#5](https://github.com/Airmetro/dsh-update-checker/issues/5)）：`shell.overlay` 容器自身是低层 stacking context，子元素 `z-index` 再高也压不出容器；现把整个 overlay 层提升到顶栏/上下文注入（≤100）之上、全屏弹层（1000）之下，并将横幅初始位置下移避开顶栏区域。
 - **v1.4.3** — 修复两个现场反馈的问题：
   - `NPM_CLI` 定位支持多种 node 前缀布局（含标准 Linux `<prefix>/lib/node_modules`），`readNpmMajor` 从解析到的 npm 位置读版本号——标准 Linux 布局下插件更新可用。
   - GitHub API 可选 token 认证（`GH_TOKEN` / `GITHUB_TOKEN` 环境变量，每台机器各自设置）：仅 `api.github.com` 带 `Authorization: Bearer`，匿名 60/h 限额提升到 5000/h；codeload 下载保持匿名。403 文案区分"限速"与"token 无效"。
