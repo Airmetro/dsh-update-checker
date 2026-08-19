@@ -76,6 +76,10 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.8** — GitHub 下载失败自动回退 npm：
+  - GitHub codeload 下载失败（HTTP 5xx/429、网络错误、超时）或 tarball 损坏时，错误统一标记 `EDOWNLOAD`，插件在 npm 存在时**自动回退 npm 通道**（此前 `502` 无错误码会直接中止更新）。实测修复"本地 GitHub 代理对 codeload.github.com 返回 502（如 hosts 劫持的 S302 代理）导致插件更新报 GitHub download HTTP 502 失败"的场景。
+  - 新增纯函数 `isGhFallbackable()`（带单元测试）；GitHub→npm 回退现覆盖 `ENOBUILD` / `ETAGMISMATCH` / `ETOOBIG` / `EDOWNLOAD`。
+
 - **v1.4.7** — pnpm 探测增强（锁文件同步跨平台补全）：
   - `findPnpm` 新增 **npm 全局前缀推导**（由 `NPM_CLI` 反推全局 node_modules 根）与 **PATH 兜底**（`pnpm.cmd`/`pnpm`），Windows 上改用 `corepack.cmd`/`corepack.exe`——不再命中 cmd 无法执行的无扩展名 bash shim（`#!/bin/sh`）。实测修复 Windows 用户级 npm 前缀（如 `%APPDATA%\npm`）与 Linux 独立安装布局下 pnpm-lock.yaml 同步失败的缺口。
   - 新增纯函数 `pnpmCandidates()`（带单元测试）返回跨平台候选列表。

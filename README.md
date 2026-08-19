@@ -76,6 +76,10 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.8** — GitHub download failures now fall back to npm:
+  - When the GitHub codeload download fails (HTTP 5xx/429, network error, timeout) or the tarball is corrupt, the error is tagged `EDOWNLOAD` and the update **automatically falls back to the npm channel** when the plugin exists on npm (previously a `502` had no error code and aborted the update). Fixes the real-world case where a local GitHub proxy returns `502` for `codeload.github.com` (e.g. hosts-hijacked S302 proxy) and plugin updates died with "GitHub download HTTP 502".
+  - New pure function `isGhFallbackable()` (unit-tested); GitHub→npm fallback now covers `ENOBUILD` / `ETAGMISMATCH` / `ETOOBIG` / `EDOWNLOAD`.
+
 - **v1.4.7** — Robust pnpm discovery for lockfile sync:
   - `findPnpm` now also probes the **npm global prefix derived from `NPM_CLI`** and a **PATH fallback** (`pnpm.cmd` / `pnpm`), and uses `corepack.cmd`/`corepack.exe` on Windows instead of the bash-only `corepack` shim (an extension-less `#!/bin/sh` file that `cmd.exe` cannot run). This makes plugin-update persistence sync `pnpm-lock.yaml` on Windows user-level npm prefixes (e.g. `%APPDATA%\npm`) and Linux standalone pnpm installs, not just node-dir-adjacent layouts.
   - New pure function `pnpmCandidates()` (unit-tested) returns the cross-platform candidate list.
