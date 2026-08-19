@@ -76,6 +76,9 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.5** — New red lamp state in the settings page:
+  - **Three-color status lamps**: yellow = update available; green = up to date; **red = three abnormal states** — ① the author deleted the repo (no source found on either npm or GitHub); ② the author rolled back (the locally installed version is higher than both publish sources); ③ the publish source cannot be queried. Hover a red lamp to see the specific reason.
+  - The plugin banner is back to the same position as the main banner (`top:64px`) instead of being offset below.
 - **v1.4.4** — Fix two community-reported issues:
   - **No more false update flags for monorepo subpackages** ([#3](https://github.com/Airmetro/dsh-update-checker/issues/3)): when checking the GitHub source, the release tag is only trusted if the `name` in the repo-root `package.json` matches the locally installed plugin name. A main-repo tag (monorepo root name ≠ subpackage name) is treated as unrelated to the plugin, so only the npm source is used — no more perpetual yellow light followed by a failed update (e.g. `@tt-a1i/archify-dsh`, `@vectorize-io/hindsight-coding-agents`). If the root package name cannot be fetched (rate limit / network), the previous behavior is kept so GitHub-only plugins are not affected.
   - **Banner no longer hidden behind the session header / context-injection chips** ([#5](https://github.com/Airmetro/dsh-update-checker/issues/5)): the `shell.overlay` container sits in a low stacking context, so a child `z-index` cannot lift the banner above it. The whole overlay layer is now raised above headers/chips (≤100) and below full-screen overlays (1000), and the banner's initial position is moved down clear of the header area.

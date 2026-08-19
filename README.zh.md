@@ -76,6 +76,9 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.5** — 设置页状态灯新增红灯档：
+  - **红/黄/绿三态**：黄灯=有更新；绿灯=已是最新；**红灯=三种异常**——① 作者已删除库（两源都查不到）；② 作者回退版本（本机已装版本比 npm 与 GitHub 发布源都高）；③ 无法查询到发布源。悬停红灯可看到具体原因。
+  - 插件横幅位置与主程序横幅恢复同位（`top:64px`），不再错开到下方。
 - **v1.4.4** — 修复两个社区反馈的问题：
   - **monorepo 子包不再误报更新**（[#3](https://github.com/Airmetro/dsh-update-checker/issues/3)）：GitHub 源检查时，release tag 对应仓库根 `package.json` 的 `name` 必须与本地插件名一致才采信该 tag；主仓库 tag（monorepo 根包名 ≠ 子包名）视为与本插件无关，仅保留 npm 源，避免"黄灯常驻 → 点更新失败"的死循环（如 `@tt-a1i/archify-dsh`、`@vectorize-io/hindsight-coding-agents`）。`ghName` 获取失败（限流/网络）时保持原行为，不影响 GitHub-only 插件。
   - **横幅不再被会话顶栏/上下文注入遮挡**（[#5](https://github.com/Airmetro/dsh-update-checker/issues/5)）：`shell.overlay` 容器自身是低层 stacking context，子元素 `z-index` 再高也压不出容器；现把整个 overlay 层提升到顶栏/上下文注入（≤100）之上、全屏弹层（1000）之下，并将横幅初始位置下移避开顶栏区域。
