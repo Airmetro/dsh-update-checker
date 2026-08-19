@@ -11,7 +11,7 @@
 - **第三方插件检查** — 扫描已安装的非官方插件（布局无关，支持 pnpm hoisted 的多位置 `node_modules`），逐一与 npm/GitHub 双源对比（目标版本取较高者）；无发布源的本地工具归入 `ignored`。
 - **GitHub 更新通道** — 对 GitHub 域使用专用 HTTPS 客户端（兼容本地自签名证书代理；npm registry 仍走严格校验），带重定向跟随、大小上限与超时；codeload tarball 解压前校验构建产物。
 - **界面内横幅** — 跟随 DSH 界面语言（zh/en），显示有更新 / 已是最新 / 失败三种状态，支持"不再提示"；更新横幅展示**变更说明 brief**（vX→vY + 风险等级，有 GitHub release 正文时附更新要点）。
-- **安全的一键更新** — 主程序：dry-run 守卫（计划内有 remove 即中止）→ 备份 → 布局自适应安装（原位或 `-g`）→ 安装后回读校验 `installed==latest`；插件：临时目录安装 + 拷贝、依赖版本核对、npm ≥ 12 自动补 `--allow-scripts` 构建原生依赖。
+- **安全的一键更新** — 主程序：dry-run 守卫（计划内有 remove 即中止）→ 备份 → 布局自适应安装（原位或 `-g`）→ 安装后回读校验 `installed==latest`；插件：临时目录安装 + 拷贝、依赖版本核对、npm ≥ 12 自动补 `--allow-scripts` 构建原生依赖。**更新（与回滚）会持久化回 profile 的 `package.json` + 锁文件**（`pnpm install --lockfile-only` / `npm install --package-lock-only`），之后的 install 不会再把插件悄悄拉回旧版——不再出现「同一插件反复提醒更新」的死循环。
 - **真回滚** — 主程序 `POST /rollback`、插件 `POST /plugin-rollback`；`GET /backups.json` 列出两者备份。
 - **看门狗重启** — 启动器从当前进程 argv 派生，杀 PID + 端口双保险，恢复确认升级为端口监听 + HTTP 200 探测（`GET /restart-status.json`）。
 - **写操作安全** — 所有写路由除 `{ "confirm": true }` 外还要求回环来源（127.0.0.1/::1），局域网客户端无法远程触发更新/重启/回滚。
@@ -76,6 +76,9 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.6** — 修复「同一插件反复提醒更新、更新了几遍都不生效」的死循环：
+  - **插件更新/回滚现在会持久化回 profile 清单 + 锁文件**：此前一键更新只替换 `node_modules/<插件>` 里的文件——profile 的 `package.json` 仍声明旧版本、`pnpm-lock.yaml`/`package-lock.json` 仍锁旧版本，于是下一次 `pnpm install`/`npm install`（或 profile 重装）会把插件悄悄拉回旧版，横幅又提示同一个更新，永远循环。现在更新（或回滚）成功后，会把新的依赖声明写回所有声明了该插件的 profile `package.json`，并用 `pnpm install --lockfile-only` / `npm install --package-lock-only` 同步锁文件（不动 node_modules、不触发 install 脚本）。spec 改写保持保守：`^0.12.3 → ^0.13.1`（保留前导操作符）、精确版本保持精确、复杂范围收敛为 npm 默认 `^新版`、`github:owner/repo` 钉到 release tag（`github:owner/repo#tag`）；无法推导的声明（`file:`/`workspace:`/别名）原样不动。回滚对称处理：更新前的旧 spec 记录在 `backup-info.json`，回滚时原样写回。
+  - 持久化失败不会否决更新本身（插件文件已替换完成）；结果随 API 响应返回，并记入操作日志（`persistedManifest` / `persistedLock`）。
 - **v1.4.5** — 设置页状态灯新增红灯档：
   - **红/黄/绿三态**：黄灯=有更新；绿灯=已是最新；**红灯=三种异常**——① 作者已删除库（两源都查不到）；② 作者回退版本（本机已装版本比 npm 与 GitHub 发布源都高）；③ 无法查询到发布源。悬停红灯可看到具体原因。
   - 插件横幅位置与主程序横幅恢复同位（`top:64px`），不再错开到下方。
