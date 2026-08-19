@@ -76,6 +76,10 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.7** — pnpm 探测增强（锁文件同步跨平台补全）：
+  - `findPnpm` 新增 **npm 全局前缀推导**（由 `NPM_CLI` 反推全局 node_modules 根）与 **PATH 兜底**（`pnpm.cmd`/`pnpm`），Windows 上改用 `corepack.cmd`/`corepack.exe`——不再命中 cmd 无法执行的无扩展名 bash shim（`#!/bin/sh`）。实测修复 Windows 用户级 npm 前缀（如 `%APPDATA%\npm`）与 Linux 独立安装布局下 pnpm-lock.yaml 同步失败的缺口。
+  - 新增纯函数 `pnpmCandidates()`（带单元测试）返回跨平台候选列表。
+
 - **v1.4.6** — 修复「同一插件反复提醒更新、更新了几遍都不生效」的死循环：
   - **插件更新/回滚现在会持久化回 profile 清单 + 锁文件**：此前一键更新只替换 `node_modules/<插件>` 里的文件——profile 的 `package.json` 仍声明旧版本、`pnpm-lock.yaml`/`package-lock.json` 仍锁旧版本，于是下一次 `pnpm install`/`npm install`（或 profile 重装）会把插件悄悄拉回旧版，横幅又提示同一个更新，永远循环。现在更新（或回滚）成功后，会把新的依赖声明写回所有声明了该插件的 profile `package.json`，并用 `pnpm install --lockfile-only` / `npm install --package-lock-only` 同步锁文件（不动 node_modules、不触发 install 脚本）。spec 改写保持保守：`^0.12.3 → ^0.13.1`（保留前导操作符）、精确版本保持精确、复杂范围收敛为 npm 默认 `^新版`、`github:owner/repo` 钉到 release tag（`github:owner/repo#tag`）；无法推导的声明（`file:`/`workspace:`/别名）原样不动。回滚对称处理：更新前的旧 spec 记录在 `backup-info.json`，回滚时原样写回。
   - 持久化失败不会否决更新本身（插件文件已替换完成）；结果随 API 响应返回，并记入操作日志（`persistedManifest` / `persistedLock`）。

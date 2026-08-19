@@ -76,6 +76,10 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.7** — Robust pnpm discovery for lockfile sync:
+  - `findPnpm` now also probes the **npm global prefix derived from `NPM_CLI`** and a **PATH fallback** (`pnpm.cmd` / `pnpm`), and uses `corepack.cmd`/`corepack.exe` on Windows instead of the bash-only `corepack` shim (an extension-less `#!/bin/sh` file that `cmd.exe` cannot run). This makes plugin-update persistence sync `pnpm-lock.yaml` on Windows user-level npm prefixes (e.g. `%APPDATA%\npm`) and Linux standalone pnpm installs, not just node-dir-adjacent layouts.
+  - New pure function `pnpmCandidates()` (unit-tested) returns the cross-platform candidate list.
+
 - **v1.4.6** — Fix the "same plugin keeps asking for the same update" loop:
   - **Plugin updates now persist to the profile manifest + lockfile**: previously the one-click update only swapped files inside `node_modules/<plugin>` — the profile's `package.json` still declared the old version and `pnpm-lock.yaml`/`package-lock.json` still pinned it, so the next `pnpm install`/`npm install` (or a profile reinstall) silently reverted the plugin to the old version and the banner asked for the same update again, forever. After an update (or rollback) the checker now writes the new dependency spec back into every profile `package.json` that declares the plugin and syncs the lockfile via `pnpm install --lockfile-only` / `npm install --package-lock-only` (no `node_modules` churn, no install scripts). Spec rewrite is conservative: `^0.12.3 → ^0.13.1` (operator preserved), exact pins stay exact, complex ranges become npm-default `^new`, `github:owner/repo` gets pinned to the release tag (`github:owner/repo#tag`), and non-derivable specs (`file:`, `workspace:`, aliases) are left untouched. Rollback is symmetric: the pre-update spec is recorded in `backup-info.json` and written back on rollback.
   - Persistence failure never vetoes the update itself (files are already replaced); the result is reported in the API response and recorded in the ops log (`persistedManifest` / `persistedLock`).
