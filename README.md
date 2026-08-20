@@ -56,7 +56,7 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - **Plugin / profile dir** — derived from the plugin's own install location (`import.meta.url`).
 - **`$DSH_HOME`** — the parent of the `profiles` root (state, backups, restart log live there).
 - **Composition file** — defaults to `$DSH_HOME/profiles/web/cordis.patch.yml`.
-- **Deployment root** — junction `realpath` first, then `DSH_DEPLOY_ROOT`, then `process.cwd()`.
+- **Deployment root** — junction `realpath` first, then `DSH_DEPLOY_ROOT`, then `process.cwd()`, then the **npm global prefix** (parent of `npm root -g`'s output; v1.4.9+ covers `npm -g` installs).
 - **Restart launcher** — self-adapting: probes common launcher names under the deployment root; the web port is read from the running `webServer.port`.
 
 ## Platform & install-layout support
@@ -75,6 +75,11 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - Before `npm install`, a backup (deployment `package-lock.json` + both @deepseek-ai version manifests + `backup-meta.json`) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/`; both main-program and plugin rollback routes are provided.
 
 ## Changelog
+
+- **v1.4.9** — Fix `findDeployRoot` missing npm -g global installs ([#7](https://github.com/Airmetro/dsh-update-checker/issues/7)) + preferred download source:
+  - **Deploy-root detection now also probes the npm global prefix** (`npm root -g`'s parent dir, e.g. `<prefix>/lib/node_modules` → `<prefix>/lib`): on Linux servers where dsh is installed `npm -g` and the web service is managed by systemd, both previous probes missed (the profile dir is a plain directory under pnpm hoisting, not a junction, and the working directory is the user's home), so the installed version showed `?`. The probe is async + cached and silently skipped on failure; a `DSH_UC_NPM_GLOBAL_ROOT` test hook lets integration tests simulate the layout.
+  - **Preferred download source setting** (settings page): when npm and GitHub have the **same version (tie)**, you can now choose the preferred source — `GitHub (default)` / `npm` / `Smart (try GitHub first, then npm)`. Non-tie cases still follow the higher version. In `smart` mode a tie falls back to npm on **any** GitHub failure (not just the `ENOBUILD`/`ETAGMISMATCH`/`ETOOBIG`/`EDOWNLOAD` whitelist), so users who cannot reach GitHub can still update; non-tie updates keep the version-higher rule and the error-code whitelist to avoid downgrades.
+  - New pure function `pickTargetSource()` (unit-tested); integration test for the npm -g layout.
 
 - **v1.4.8** — GitHub download failures now fall back to npm:
   - When the GitHub codeload download fails (HTTP 5xx/429, network error, timeout) or the tarball is corrupt, the error is tagged `EDOWNLOAD` and the update **automatically falls back to the npm channel** when the plugin exists on npm (previously a `502` had no error code and aborted the update). Fixes the real-world case where a local GitHub proxy returns `502` for `codeload.github.com` (e.g. hosts-hijacked S302 proxy) and plugin updates died with "GitHub download HTTP 502".

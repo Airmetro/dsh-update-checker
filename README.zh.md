@@ -56,7 +56,7 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 - **插件 / profile 目录** — 由插件自身安装位置（`import.meta.url`）推导。
 - **`$DSH_HOME`** — `profiles` 根目录的父目录（状态文件、备份、重启日志都在这里）。
 - **组合文件** — 默认 `$DSH_HOME/profiles/web/cordis.patch.yml`。
-- **部署根** — 先 junction `realpath` 解析，再 `DSH_DEPLOY_ROOT`，最后 `process.cwd()`。
+- **部署根** — 先 junction `realpath` 解析，再 `DSH_DEPLOY_ROOT`，然后 `process.cwd()`，最后 **npm 全局前缀**（`npm root -g` 的父目录，v1.4.9 起支持 npm -g 全局安装形态）。
 - **重启启动器** — 自适应：在部署根下探测常见启动脚本名；web 端口读取运行中的 `webServer.port`。
 
 ## 平台与安装布局支持
@@ -75,6 +75,11 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json`），主程序与插件都有对应回滚路由。
 
 ## 更新日志
+
+- **v1.4.9** — 修复 npm -g 全局安装形态下部署根探测不到（[#7](https://github.com/Airmetro/dsh-update-checker/issues/7)）+ 新增默认下载源设置：
+  - **部署根探测新增 npm 全局前缀候选**（`npm root -g` 输出的父目录，如 `<prefix>/lib/node_modules` → `<prefix>/lib`）：Linux 服务器用 `npm -g` 安装 dsh、web 服务由 systemd 托管时，原有两条探测路径都会落空（pnpm hoisted 布局下 profile 侧是独立目录而非 junction、工作目录是用户家目录），导致核心程序已装版本显示 `?`。探测为异步 + 缓存，失败静默跳过；提供 `DSH_UC_NPM_GLOBAL_ROOT` 测试钩子供集成测试模拟该布局。
+  - **新增"默认下载源"设置**（设置页）：当 npm 与 GitHub **版本一致（平局）**时，可选择首选下载源——`GitHub（默认）` / `npm` / `智能选择（先 GitHub，失败再 npm）`。非平局仍按版本较高者。`smart` 模式下平局时 GitHub **任意失败**都回退 npm（不再局限于 `ENOBUILD` / `ETAGMISMATCH` / `ETOOBIG` / `EDOWNLOAD` 白名单），连不上 GitHub 的用户也能更新；非平局更新仍按版本较高者 + 错误码白名单，避免降级到较低版本。
+  - 新增纯函数 `pickTargetSource()`（带单元测试）；新增 npm -g 布局集成测试。
 
 - **v1.4.8** — GitHub 下载失败自动回退 npm：
   - GitHub codeload 下载失败（HTTP 5xx/429、网络错误、超时）或 tarball 损坏时，错误统一标记 `EDOWNLOAD`，插件在 npm 存在时**自动回退 npm 通道**（此前 `502` 无错误码会直接中止更新）。实测修复"本地 GitHub 代理对 codeload.github.com 返回 502（如 hosts 劫持的 S302 代理）导致插件更新报 GitHub download HTTP 502 失败"的场景。
