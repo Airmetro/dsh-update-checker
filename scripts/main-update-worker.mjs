@@ -90,16 +90,36 @@ function runNpm(args, { cwd, timeoutMs = 600000, onProgress } = {}) {
       timedOut = true;
       try { child.kill(); } catch { /* 已退出 */ }
     }, timeoutMs);
-    child.stdout.on("data", (d) => { stdout += d.toString("utf8"); });
+    // v1.4.13 死锁熔断：npm 对本机 dsh 大依赖树解析死锁（长时间无任何输出），
+    // 不再傻等 600s——连续 120s 无输出即 kill，走 tarball 整树回退。
+    let deadlocked = false;
+    let lastActivity = Date.now();
+    const markActivity = () => { lastActivity = Date.now(); };
+    const deadlockTimer = setInterval(() => {
+      if (!deadlocked && !timedOut && Date.now() - lastActivity > 120000) {
+        deadlocked = true;
+        try { child.kill(); } catch { /* 已退出 */ }
+      }
+    }, 15000);
+    child.stdout.on("data", (d) => { stdout += d.toString("utf8"); markActivity(); });
     child.stderr.on("data", (d) => {
       const s = d.toString("utf8");
       stderr += s;
       httpCount += (s.match(/npm http /g) || []).length;
+      markActivity();
       if (onProgress) onProgress({ httpCount, stderrTail: stderr.slice(-400) });
     });
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
+    child.on("error", (e) => { clearTimeout(timer); clearInterval(deadlockTimer); reject(e); });
     child.on("close", (code) => {
       clearTimeout(timer);
+      clearInterval(deadlockTimer);
+      if (deadlocked) {
+        const err = new Error("npm deadlock detected (no output for 120s) — falling back to registry tarballs");
+        err.stderr = stderr;
+        err.stdout = stdout;
+        err.code = "ENPMDEADLOCK";
+        return reject(err);
+      }
       if (timedOut) {
         const err = new Error(`npm timed out after ${Math.round(timeoutMs / 1000)}s`);
         err.stderr = stderr;

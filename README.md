@@ -78,6 +78,8 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.13** — npm deadlock fast-fuse: npm resolving the huge dsh dependency tree can deadlock with **no output** (this machine: guaranteed, BUG evidence #7). `runNpm`/`runNpmProgress` now kill the child after **120 s of zero output** (`ENPMDEADLOCK`) instead of waiting out the 600 s timeout, so the main-program update falls back to the whole-tree tarball install after ~2 minutes instead of ~10 — the update completes in roughly 5 minutes instead of 16.
+
 - **v1.4.12** — Make the main-program update actually reach the target version on slow/blocked npm trees + restart usability:
   - **Tarball fallback now updates the WHOLE `@deepseek-ai` tree, not just `@deepseek-ai/dsh`**: v1.4.10's fallback only replaced the main package, so the post-install integrity check (`verifyDeployTree`: every `dsh-*` package must equal the target version) was *guaranteed* to fail → rollback → "update complete but still the old version after restart". The fallback now downloads the tarball of the main package **and every `dsh-*` subpackage whose version differs** from the target and extracts them over the deployment tree (registry-direct, no npm resolution), with per-package progress and a failure list that the integrity check still validates.
   - **`/restart` lock auto-expires**: `restartScheduled` was never reset on the success path, so after the first restart every later attempt returned 409 "restart already scheduled". It now expires 180 s after scheduling.

@@ -78,6 +78,8 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.13** — npm 死锁快速熔断：npm 解析 dsh 超大依赖树可能**无任何输出地死锁**（本机必现，BUG 证据 7）。`runNpm`/`runNpmProgress` 现在连续 **120 秒无输出即 kill**（`ENPMDEADLOCK`），不再傻等 600 秒超时——主程序更新约 2 分钟就进入整树 tarball 回退，整体从 ~16 分钟缩短到 ~5 分钟。
+
 - **v1.4.12** — 让主程序更新在 npm 卡死的机器上真正到达目标版本 + 重启可用性：
   - **tarball 回退改为整树更新**（不只 `@deepseek-ai/dsh` 主包）：v1.4.10 的回退只替换主包，导致安装后完整性校验（`verifyDeployTree`：所有 `dsh-*` 包必须 = 目标版本）**必然失败** → 回滚 → "更新完成但重启后还是旧版本"。现在回退会从 registry 直连下载主包**以及所有版本 ≠ 目标的 `dsh-*` 子包**的 tarball 覆盖到部署树（不经 npm 解析），逐包进度 + 失败清单（失败的包仍由完整性校验统一判定）。
   - **`/restart` 锁自动过期**：`restartScheduled` 在成功路径从不重置，第一次重启后所有后续重启都 409 "restart already scheduled"。现改为调度 180 秒后自动过期。
