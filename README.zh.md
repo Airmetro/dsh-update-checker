@@ -76,6 +76,12 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.10** — 主程序检查改为 npm + GitHub 双源比对（不再稳定版优先）：
+  - **主程序（`@deepseek-ai/dsh`）目前没有稳定版**（全是 rc）。旧 `pickNpmLatest` 优先稳定版、全预发布时回退 `dist-tags.latest`，导致发布在 `next` 通道的 rc（如 `latest=0.1.0-rc.7` 而 `next=0.1.0-rc.8`）被隐藏。主程序检查改用 `pickMainLatest()`——直接取已发布**最高版本（含预发布）**。
+  - **与插件一致的双源比对**：主程序检查同时查询 GitHub 仓库 release（deepseek-harness，tag 带 `dsh-v` 前缀如 `dsh-v0.1.0-rc.8`），取 npm / GitHub 中较高者；平局时按默认下载源设置决定（GitHub 默认 / npm / 智能）。注意不能用 `/releases/latest`（该端点只返回非预发布 release，而该仓库 release 全是预发布会 404），改用列表端点。
+  - `/update` 路由安装的也是双源决策后的目标版本，"横幅显示什么就装什么"。
+  - 新增纯函数 `pickMainLatest()`、`mainTagToVersion()`（带单元测试）；测试 104 通过。
+
 - **v1.4.9** — 修复 npm -g 全局安装形态下部署根探测不到（[#7](https://github.com/Airmetro/dsh-update-checker/issues/7)）+ 新增默认下载源设置：
   - **部署根探测新增 npm 全局前缀候选**（`npm root -g` 输出的父目录，如 `<prefix>/lib/node_modules` → `<prefix>/lib`）：Linux 服务器用 `npm -g` 安装 dsh、web 服务由 systemd 托管时，原有两条探测路径都会落空（pnpm hoisted 布局下 profile 侧是独立目录而非 junction、工作目录是用户家目录），导致核心程序已装版本显示 `?`。探测为异步 + 缓存，失败静默跳过；提供 `DSH_UC_NPM_GLOBAL_ROOT` 测试钩子供集成测试模拟该布局。
   - **新增"默认下载源"设置**（设置页）：当 npm 与 GitHub **版本一致（平局）**时，可选择首选下载源——`GitHub（默认）` / `npm` / `智能选择（先 GitHub，失败再 npm）`。非平局仍按版本较高者。`smart` 模式下平局时 GitHub **任意失败**都回退 npm（不再局限于 `ENOBUILD` / `ETAGMISMATCH` / `ETOOBIG` / `EDOWNLOAD` 白名单），连不上 GitHub 的用户也能更新；非平局更新仍按版本较高者 + 错误码白名单，避免降级到较低版本。
