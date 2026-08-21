@@ -385,9 +385,16 @@ async function rollbackFromBackup() {
 // （BUG 证据 7），此时改用 registry tarball 直连下载 dsh 主包解压覆盖 + 同步声明。
 // 只覆盖 @deepseek-ai/dsh 本体（lib/package.json 等），其余 @deepseek-ai 包保持原版本
 // （一致树无需整树升级；若版本不一致由后续 verify 检出并回滚）。
-async function installFromTarball() {
-  const url = `https://registry.npmjs.org/${PACKAGE.replace("/", "%2F")}/-/${PACKAGE.split("/")[1]}-${TARGET}.tgz`;
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// v1.4.12 tarball 直连回退（D1 增强，整树版）：npm install 对本机 dsh 大依赖树可能死锁/超时
+// （BUG 证据 7），此时改用 registry tarball 直连下载 **全部** @deepseek-ai/dsh-* 包到目标版本
+// 解压覆盖 + 同步声明。v1.4.10 的回退只更新 @deepseek-ai/dsh 主包，导致完整性校验
+// （verifyDeployTree：所有 dsh-* 必须 = 目标版本）必然失败 → 回滚 → "重启后还是旧版本"。
+// 现在整树更新：主包 + 所有版本 ≠ 目标的 dsh-* 子包逐个 tarball 覆盖。
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 下载并解压单个 @deepseek-ai/<pkg>@<version> 的 tarball，覆盖到 <nmDir>/<pkg>（先备份再替换）。
+async function installOneTarball(pkgName, nmDir, version) {
+  const url = `https://registry.npmjs.org/@deepseek-ai%2F${pkgName}/-/${pkgName}-${version}.tgz`;
   const buf = await new Promise((resolve, reject) => {
     const doFetch = async (triesLeft) => {
       try {
@@ -414,7 +421,7 @@ async function installFromTarball() {
     if (type === 48 || type === 0) entries.push({ name: nameRaw, data: gz.subarray(off + 512, off + 512 + size) });
     off += 512 + Math.ceil(size / 512) * 512;
   }
-  const pkgDir = join(ROOT, "node_modules", ...PACKAGE.split("/"));
+  const pkgDir = join(nmDir, pkgName);
   const bak = pkgDir + ".bak-tarball";
   try { await rm(bak, { recursive: true, force: true }); } catch { /* noop */ }
   try { await cp(pkgDir, bak, { recursive: true }); } catch { /* 备份失败继续 */ }
@@ -428,14 +435,56 @@ async function installFromTarball() {
     await writeFile(target, e.data);
   }
   const pj = await readJson(join(pkgDir, "package.json"));
-  if (!pj || pj.version !== TARGET) {
+  if (!pj || pj.version !== version) {
     // 覆盖失败：还原备份
     await rm(pkgDir, { recursive: true, force: true });
     if (await exists(bak)) await cp(bak, pkgDir, { recursive: true });
-    throw new Error(`tarball install version mismatch (${pj && pj.version} != ${TARGET})`);
+    throw new Error(`${pkgName} tarball version mismatch (${pj && pj.version} != ${version})`);
   }
   await rm(bak, { recursive: true, force: true }).catch(() => {});
-  return { ok: true, installed: pj.version };
+  return pj.version;
+}
+
+// 整树 tarball 更新：主包 + 所有版本 ≠ TARGET 的 dsh-* 子包；返回 { updated, failed }。
+// failed 项不在此中止——由后续完整性校验统一判定（任一包没到位 → verify 失败 → 回滚）。
+async function installTreeFromTarballs(onProgress) {
+  const nm = join(ROOT, "node_modules", "@deepseek-ai");
+  let names = [];
+  try {
+    names = (await readdir(nm, { withFileTypes: true }))
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    throw new Error(`@deepseek-ai dir missing: ${nm}`);
+  }
+  const todo = [];
+  for (const n of names) {
+    if (n === "dsh") { todo.push(n); continue; } // 主包
+    if (!n.startsWith("dsh-")) continue;          // 基础库（cordis/cosmokit 等）保持原版本
+    const pj = await readJson(join(nm, n, "package.json"));
+    if (pj && pj.version === TARGET) continue;    // 已到位，跳过
+    todo.push(n);
+  }
+  const updated = [];
+  const failed = [];
+  for (let i = 0; i < todo.length; i++) {
+    const n = todo[i];
+    if (onProgress) {
+      onProgress({ current: i + 1, total: todo.length, name: n });
+    }
+    try {
+      await installOneTarball(n, nm, TARGET);
+      updated.push(n);
+    } catch (err) {
+      failed.push({ name: n, error: String((err && err.message) || err) });
+      await opsLog({
+        op: "main-tarball-pkg-failed",
+        pkg: n,
+        error: String((err && err.message) || err),
+      });
+    }
+  }
+  return { updated, failed, total: todo.length };
 }
 
 async function fail(msg, code, extra = {}) {
@@ -489,18 +538,34 @@ async function main() {
       } });
       output = truncate((stdout || "") + (stderr || ""), 3000);
     } catch (err) {
-      // npm 失败/超时 → tarball 直连回退（BUG 证据 7：本机 npm 对该树解析死锁）
+      // npm 失败/超时 → tarball 整树直连回退（BUG 证据 7：本机 npm 对该树解析死锁；
+      // v1.4.12：回退更新全部 dsh-* 包到目标版本，否则完整性校验必然失败回滚）
       await opsLog({
         op: "main-install-npm-failed-fallback-tarball",
         error: String(err && err.message ? err.message : err),
         code: err && err.code,
       });
-      await writeProgress({ phase: "install-tarball", label: "npm 超时，改用 registry 直连安装…", percent: 40 });
+      await writeProgress({ phase: "install-tarball", label: "npm 超时，改用 registry 直连安装（整树）…", percent: 40 });
       try {
-        const tb = await installFromTarball();
+        const tb = await installTreeFromTarballs((p) => {
+          const percent = Math.min(80, 40 + Math.round((p.current / Math.max(1, p.total)) * 40));
+          writeProgress({
+            phase: "install-tarball",
+            label: "registry 直连安装中…",
+            percent,
+            detail: `已更新 ${p.current}/${p.total} 个 @deepseek-ai 包（${p.name}）`,
+            count: { done: p.current, total: p.total },
+          });
+        });
         installVia = "tarball";
-        output = `tarball direct install: ${PACKAGE}@${TARGET}`;
-        await opsLog({ op: "main-install-tarball-ok", installed: tb.installed });
+        output = `tarball whole-tree install: ${tb.updated.length}/${tb.total} packages updated` +
+          (tb.failed.length ? ` (failed: ${tb.failed.map((f) => f.name).join(", ")})` : "");
+        await opsLog({
+          op: "main-install-tarball-tree-ok",
+          updated: tb.updated.length,
+          total: tb.total,
+          failed: tb.failed,
+        });
       } catch (tbErr) {
         const rollback = await rollbackFromBackup();
         return await fail(

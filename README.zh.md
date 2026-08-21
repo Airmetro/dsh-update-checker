@@ -78,6 +78,11 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.12** — 让主程序更新在 npm 卡死的机器上真正到达目标版本 + 重启可用性：
+  - **tarball 回退改为整树更新**（不只 `@deepseek-ai/dsh` 主包）：v1.4.10 的回退只替换主包，导致安装后完整性校验（`verifyDeployTree`：所有 `dsh-*` 包必须 = 目标版本）**必然失败** → 回滚 → "更新完成但重启后还是旧版本"。现在回退会从 registry 直连下载主包**以及所有版本 ≠ 目标的 `dsh-*` 子包**的 tarball 覆盖到部署树（不经 npm 解析），逐包进度 + 失败清单（失败的包仍由完整性校验统一判定）。
+  - **`/restart` 锁自动过期**：`restartScheduled` 在成功路径从不重置，第一次重启后所有后续重启都 409 "restart already scheduled"。现改为调度 180 秒后自动过期。
+  - **设置页新增手动「重启服务」按钮**（显示与控制区）：更新流程本身不再调 `/restart`（v1.4.11 起由 worker 内部重启），这是显式、可观察的重启入口，也便于验证看门狗工作。
+
 - **v1.4.11** — 修复「点更新后立即显示更新完成、重启后还是旧版本」、DSH Desktop（Electron）插件更新失败、横幅双检查门控：
   - **主程序更新不再提前重启**（[#9](https://github.com/Airmetro/dsh-update-checker/issues/9)，Airmetro 反馈）：`/update` 只是**启动**了独立 worker（停服务→安装→校验→重启→健康检查）。此前客户端把 `/update` 的 200 当作"更新完成"，立刻再调 `/restart`，与 worker 的安装并发（文件占用 → 安装失败回滚 → 服务以旧版本被拉起）——这就是"点更新→立即显示完成→手动重启后还是旧版本"的根因。现在横幅与设置页都轮询 `update-progress.json`，直到 worker 报 `phase=done/error` 才显示"更新完成"并刷新页面；重启由 worker 自己完成，不再需要单独的 restart 调用。
   - **DSH Desktop（Electron）插件更新修复**（[#8](https://github.com/Airmetro/dsh-update-checker/issues/8)）：所有 npm/pnpm 子进程原来都用 `process.execPath` 启动——Electron 下那是 electron.exe，npm 根本没运行（报 `WSALookupServiceBegin…10108` / "npm install produced no package"）。新增 `resolveNodeExe()` 定位真实 node（`DSH_UC_NODE_EXE` 覆盖 → `npm_node_execpath` → execPath 若确实是 node → 常见安装目录 → PATH），`getNpmCli()` 从真实 node 目录推导 npm-cli.js；主程序更新 worker 也改用真实 node 启动。
