@@ -1,4 +1,4 @@
-// 集成测试（1.4.1）：备份文件夹配置 / 旧位置迁移 / 清空备份缓存。
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
@@ -34,7 +34,7 @@ test('writeBackupRoot: 拒绝相对路径；接受绝对路径并持久化', asy
   await mod.writeBackupRoot(custom);
   assert.equal(await mod.readBackupRoot(), custom);
   assert.deepEqual(await mod.backupDirs(), { main: custom, plugins: join(custom, 'plugins') });
-  // 还原默认，避免影响其它用例
+  
   await mod.writeBackupRoot(join(base, 'dsh-update-checker-backups'));
 });
 
@@ -45,7 +45,7 @@ test('migrateLegacyBackups: 旧 .dsh-plugin-backups 首次使用时迁移到 bac
   await writeFile(join(legacyEntry, 'backup-info.json'), JSON.stringify({ name: 'dshcost', original: join(profileNM, 'dshcost'), at: 123 }), 'utf8');
   const dirs = await mod.backupDirs();
   await mod.migrateLegacyBackups();
-  // 旧位置已迁移：新位置存在条目，旧位置消失
+  
   assert.equal((await readdir(dirs.plugins)).includes('dshcost-123'), true, '备份应迁移到 plugins 目录');
   const legacyGone = await import('node:fs').then(({ existsSync }) => !existsSync(legacy));
   assert.equal(legacyGone, true, '旧位置应已被移动（不再存在）');
@@ -64,12 +64,12 @@ test('listMainBackups: 忽略 plugins 容器目录（不当作主程序备份）
 
 test('clearAllBackups: 删除主程序与插件全部备份条目', async () => {
   const dirs = await mod.backupDirs();
-  await mod.clearAllBackups(); // 先清空前面测试的残留，保证断言独立
+  await mod.clearAllBackups(); 
   await mkdir(join(dirs.main, '2026-08-18T00-00-00-000Z'), { recursive: true });
   await mkdir(join(dirs.plugins, 'dshcost-456'), { recursive: true });
   const result = await mod.clearAllBackups();
   assert.equal(result.removed, 2);
-  // main 里只应剩 plugins 容器目录本身；plugins 目录内清空
+  
   assert.deepEqual(await readdir(dirs.main), ['plugins']);
   assert.equal((await readdir(dirs.plugins)).length, 0);
 });

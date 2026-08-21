@@ -1,6 +1,6 @@
-// 集成测试（1.4.1）：多位置扫描按包名去重。
-// 在临时目录构造「顶层 node_modules + profiles/web/node_modules（pnpm hoisted）两个物理位置
-// 各放一个同名插件」→ scanInstalledPlugins 应只返回一条（修复 dshmarket 重复条目）。
+
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -28,7 +28,7 @@ test.before(async () => {
     "- insert:\n    - id: dupplugin\n      name: 'dupplugin'\n",
     'utf8'
   );
-  // 另一个目录里放一个不同的插件（不应受影响）
+  
   const other = join(profileNM, 'otherplugin');
   await mkdir(other, { recursive: true });
   await writeFile(
@@ -50,6 +50,6 @@ test('scanInstalledPlugins: 同名插件多位置只返回一条（1.4.1 去重�
   const found = await mod.scanInstalledPlugins();
   const names = found.map((p) => p.name).sort();
   assert.deepEqual(names, ['dupplugin', 'otherplugin'], `实际: ${JSON.stringify(names)}`);
-  // dupplugin 只出现一次
+  
   assert.equal(names.filter((n) => n === 'dupplugin').length, 1);
 });

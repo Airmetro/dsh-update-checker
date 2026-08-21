@@ -1,5 +1,5 @@
-// 集成测试：真实拷贝布局下的 eco 版本读取 / 同步计划 / 同步执行 / 备份 / 部署根(env 回退)
-// 通过 DSH_UC_PROFILE_NODE_MODULES + DSH_DEPLOY_ROOT 在临时目录模拟部署，绝不触碰真实环境。
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
@@ -16,7 +16,7 @@ test.before(async () => {
   deploy = join(base, 'deploy');
   profile = join(base, 'profile');
 
-  // 部署侧：两个 @deepseek-ai 包 + lockfile
+  
   await mkdir(join(deploy, 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true });
   await writeFile(
     join(deploy, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
@@ -29,7 +29,7 @@ test.before(async () => {
   );
   await writeFile(join(deploy, 'package-lock.json'), '{}');
 
-  // profile 侧：dsh 旧版 + 一个 profile 独有的第三方包（绝不能被删）
+  
   await mkdir(join(profile, 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true });
   await writeFile(
     join(profile, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
@@ -55,7 +55,7 @@ test('readEcoVersions 读取 @deepseek-ai 各包版本', async () => {
     dsh: '1.0.0',
     'dsh-client-runtime': '2.0.0',
   });
-  // profile 侧只统计 @deepseek-ai/*，dsh-update-checker 不在其列
+  
   assert.deepEqual(await mod.readEcoVersions(join(profile, 'node_modules')), { dsh: '0.9.0' });
 });
 
@@ -73,7 +73,7 @@ test('backupForUpdate 写 lockfile + 两份版本清单备份', async () => {
   const profileV = JSON.parse(await readFile(join(dir, 'versions-profile.json'), 'utf8'));
   assert.equal(deployV.dsh, '1.0.0');
   assert.equal(deployV['dsh-client-runtime'], '2.0.0');
-  assert.equal(profileV.dsh, '0.9.0'); // 同步尚未执行，仍是旧版
+  assert.equal(profileV.dsh, '0.9.0'); 
   assert.equal(await readFile(join(dir, 'package-lock.json'), 'utf8'), '{}');
 });
 
@@ -81,12 +81,12 @@ test('runSync 执行同步且不碰 profile 独有包', async () => {
   const { todo } = await mod.planSync(deploy);
   const results = await mod.runSync(deploy, todo);
   assert.equal(results.filter((r) => !r.ok).length, 0, JSON.stringify(results));
-  // 部署侧内容已同步到 profile
+  
   const dsh = JSON.parse(await readFile(join(profile, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'));
   assert.equal(dsh.version, '1.0.0');
   const rt = JSON.parse(await readFile(join(profile, 'node_modules', '@deepseek-ai', 'dsh-client-runtime', 'package.json'), 'utf8'));
   assert.equal(rt.version, '2.0.0');
-  // profile 独有的第三方包仍在
+  
   const uc = JSON.parse(await readFile(join(profile, 'node_modules', 'dsh-update-checker', 'package.json'), 'utf8'));
   assert.equal(uc.version, '1.3.1');
 });

@@ -1,4 +1,4 @@
-// 单元测试：v1.4.8 新增纯函数 isGhFallbackable —— GitHub→npm fallback 错误码判定
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isGhFallbackable } from '../lib/index.js';
@@ -15,7 +15,7 @@ test('isGhFallbackable: 既有三码保持 → true', () => {
 });
 
 test('isGhFallbackable: 无 code / 其它 code / null / undefined → false', () => {
-  assert.equal(isGhFallbackable(new Error('GitHub download HTTP 502')), false); // 旧行为：502 无 code 不进 fallback
+  assert.equal(isGhFallbackable(new Error('GitHub download HTTP 502')), false); 
   assert.equal(isGhFallbackable(Object.assign(new Error('x'), { code: 'ECONNRESET' })), false);
   assert.equal(isGhFallbackable(null), false);
   assert.equal(isGhFallbackable(undefined), false);

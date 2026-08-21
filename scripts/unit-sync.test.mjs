@@ -1,16 +1,16 @@
-// 单元测试：同步计划计算（planSyncFromMaps 纯函数，不碰磁盘）
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { planSyncFromMaps } from '../lib/index.js';
 
 test('planSyncFromMaps: 版本不同 / 缺失的包进入计划', () => {
   const todo = planSyncFromMaps(
-    { a: '1.0.0', b: '2.0.0', c: '3.0.0' }, // 部署侧
-    { a: '1.0.0', b: '1.5.0' }               // profile 侧
+    { a: '1.0.0', b: '2.0.0', c: '3.0.0' }, 
+    { a: '1.0.0', b: '1.5.0' }               
   );
   assert.deepEqual(todo, [
-    { name: 'b', from: '1.5.0', to: '2.0.0' }, // 版本不同 → 更新
-    { name: 'c', from: null, to: '3.0.0' },    // profile 缺失 → 新增
+    { name: 'b', from: '1.5.0', to: '2.0.0' }, 
+    { name: 'c', from: null, to: '3.0.0' },    
   ]);
 });
 
@@ -20,7 +20,7 @@ test('planSyncFromMaps: 版本一致 → 空计划', () => {
 });
 
 test('planSyncFromMaps: profile 独有包绝不被列入计划（不会删除）', () => {
-  // 关键安全不变量：只从部署侧拷贝，绝不把 profile 独有的包（如 dshcost）当垃圾清理
+  
   const todo = planSyncFromMaps({ a: '1.0.0' }, { a: '1.0.0', x: '9.9.9' });
   assert.deepEqual(todo, []);
 });

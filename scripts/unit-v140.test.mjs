@@ -1,6 +1,6 @@
-// 单元测试：v1.4.0 新增纯函数 —— satisfies（依赖范围）、pickNpmLatest（稳定版选择）、
-// deriveRisk（风险分级）、planDepMerges（依赖合并决策）、resolveEntryFile（入口解析）、
-// isLoopback（回环校验）、deployType / buildNpmInstallArgs（部署形态自适应）。
+
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -17,7 +17,7 @@ import {
   buildNpmInstallArgs,
 } from '../lib/index.js';
 
-// ── satisfies ──────────────────────────────────────────────────────────
+
 test('satisfies: 精确版本', () => {
   assert.equal(satisfies('1.2.3', '1.2.3'), true);
   assert.equal(satisfies('1.2.4', '1.2.3'), false);
@@ -28,17 +28,17 @@ test('satisfies: 精确版本', () => {
 test('satisfies: ^ caret 语义（含 0.x 特殊规则）', () => {
   assert.equal(satisfies('1.2.3', '^1.2.3'), true);
   assert.equal(satisfies('1.9.9', '^1.2.3'), true);
-  assert.equal(satisfies('2.0.0', '^1.2.3'), false); // 跨主版本不允许
+  assert.equal(satisfies('2.0.0', '^1.2.3'), false); 
   assert.equal(satisfies('0.2.9', '^0.2.3'), true);
-  assert.equal(satisfies('0.3.0', '^0.2.3'), false); // 0.x 次版本锁定
+  assert.equal(satisfies('0.3.0', '^0.2.3'), false); 
   assert.equal(satisfies('0.0.3', '^0.0.3'), true);
-  assert.equal(satisfies('0.0.4', '^0.0.3'), false); // 0.0.x 补丁锁定
+  assert.equal(satisfies('0.0.4', '^0.0.3'), false); 
 });
 
 test('satisfies: ~ tilde 语义', () => {
   assert.equal(satisfies('1.2.9', '~1.2.3'), true);
   assert.equal(satisfies('1.3.0', '~1.2.3'), false);
-  assert.equal(satisfies('1.2.3', '~1.2'), true); // ~1.2 → 1.2.x
+  assert.equal(satisfies('1.2.3', '~1.2'), true); 
   assert.equal(satisfies('1.3.0', '~1.2'), false);
 });
 
@@ -59,7 +59,7 @@ test('satisfies: x/通配与部分版本', () => {
   assert.equal(satisfies('1.3.0', '1.2.x'), false);
   assert.equal(satisfies('1.9.9', '1.x'), true);
   assert.equal(satisfies('2.0.0', '1.x'), false);
-  assert.equal(satisfies('1.2.5', '1.2'), true); // 部分版本按 1.2.x
+  assert.equal(satisfies('1.2.5', '1.2'), true); 
   assert.equal(satisfies('1.3.0', '1.2'), false);
   assert.equal(satisfies('1.2.3', '*'), true);
 });
@@ -73,13 +73,13 @@ test('satisfies: 连字符区间与 || 或', () => {
 });
 
 test('satisfies: 预发布规则（与 npm semver 一致）', () => {
-  assert.equal(satisfies('0.1.0-rc.2', '^0.1.0-rc.1'), true); // 同 [M.m.p] 的 rc 允许
-  assert.equal(satisfies('0.1.0', '^0.1.0-rc.1'), true); // 范围下限含预发布 → 区间内稳定版也满足（npm 语义）
-  assert.equal(satisfies('1.0.0-beta.1', '^1.0.0'), false); // 范围无预发布 → 预发布版本不满足
+  assert.equal(satisfies('0.1.0-rc.2', '^0.1.0-rc.1'), true); 
+  assert.equal(satisfies('0.1.0', '^0.1.0-rc.1'), true); 
+  assert.equal(satisfies('1.0.0-beta.1', '^1.0.0'), false); 
   assert.equal(satisfies('1.0.0', '1.0.0'), true);
 });
 
-// ── pickNpmLatest ──────────────────────────────────────────────────────
+
 test('pickNpmLatest: 有稳定版时优先最高稳定版（latest tag 指向 prerelease 也不受影响）', () => {
   const doc = {
     'dist-tags': { latest: '2.0.0-beta.1', next: '2.0.0-beta.2' },
@@ -104,7 +104,7 @@ test('pickNpmLatest: 空 packument 返回 null', () => {
   assert.equal(pickNpmLatest(null), null);
 });
 
-// ── deriveRisk ─────────────────────────────────────────────────────────
+
 test('deriveRisk: 语义化分级', () => {
   assert.equal(deriveRisk('1.0.0', '2.0.0'), 'major');
   assert.equal(deriveRisk('1.0.0', '1.1.0'), 'minor');
@@ -115,17 +115,17 @@ test('deriveRisk: 语义化分级', () => {
   assert.equal(deriveRisk('abc', '1.0.0'), 'unknown');
 });
 
-// ── planDepMerges ──────────────────────────────────────────────────────
+
 test('planDepMerges: 缺失→copy；满足→keep；不满足→replace', () => {
   const plan = planDepMerges(
     { a: '^1.0.0', b: '^2.0.0', c: '^3.0.0', d: '1.0.0' },
     { a: '1.5.0', b: '1.9.9', d: '1.0.0' }
   );
   const byDep = Object.fromEntries(plan.map((i) => [i.dep, i.action]));
-  assert.equal(byDep.a, 'keep'); // 1.5.0 满足 ^1.0.0
-  assert.equal(byDep.b, 'replace'); // 1.9.9 不满足 ^2.0.0
-  assert.equal(byDep.c, 'copy'); // 缺失
-  assert.equal(byDep.d, 'keep'); // 精确匹配
+  assert.equal(byDep.a, 'keep'); 
+  assert.equal(byDep.b, 'replace'); 
+  assert.equal(byDep.c, 'copy'); 
+  assert.equal(byDep.d, 'keep'); 
 });
 
 test('planDepMerges: 空规格 / 非法已装版本', () => {
@@ -133,7 +133,7 @@ test('planDepMerges: 空规格 / 非法已装版本', () => {
   assert.equal(planDepMerges({ a: '^1.0.0' }, { a: 'not-a-version' })[0].action, 'replace');
 });
 
-// ── resolveEntryFile ───────────────────────────────────────────────────
+
 test('resolveEntryFile: main / exports 各形态', () => {
   assert.equal(resolveEntryFile({ main: 'lib/index.js' }), 'lib/index.js');
   assert.equal(resolveEntryFile({ exports: 'lib/index.js' }), 'lib/index.js');
@@ -146,7 +146,7 @@ test('resolveEntryFile: main / exports 各形态', () => {
   assert.equal(resolveEntryFile({}), null);
 });
 
-// ── isLoopback ─────────────────────────────────────────────────────────
+
 test('isLoopback: 仅回环地址放行', () => {
   const req = (addr) => ({ socket: { remoteAddress: addr } });
   assert.equal(isLoopback(req('127.0.0.1')), true);
@@ -157,11 +157,11 @@ test('isLoopback: 仅回环地址放行', () => {
   assert.equal(isLoopback({}), false);
 });
 
-// ── deployType / buildNpmInstallArgs ───────────────────────────────────
+
 test('deployType: 有 package.json（含依赖）→ local；无 → global', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'duc-deploy-'));
   try {
-    assert.equal(deployType(dir), 'global'); // 无 package.json
+    assert.equal(deployType(dir), 'global'); 
     await writeFile(
       join(dir, 'package.json'),
       JSON.stringify({ dependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' } }),

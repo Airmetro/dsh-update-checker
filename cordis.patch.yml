@@ -1,5 +1,5 @@
-# dsh-update-checker bundle patch: mount the plugin as a single composition row.
-# 通过任意 cordis.patch.yml 层应用此行即可装载。
+
+
 - insert:
     - id: dsh-update-checker
       name: 'dsh-update-checker'

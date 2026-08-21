@@ -1,7 +1,7 @@
-// 集成测试：插件更新/回滚后的 manifest + 锁文件持久化（v1.4.6）
-// 修复"一键更新只替换 node_modules 文件、不回写 package.json/锁文件 → 下次 install
-// 拉回旧版 → 同一插件反复提醒更新"的死循环。
-// 通过 DSH_UC_PROFILE_NODE_MODULES + DSH_UC_PNPM_BIN 在临时目录模拟部署，绝不触碰真实环境。
+
+
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
@@ -20,7 +20,7 @@ test.before(async () => {
   profiles = join(base, 'profiles');
   web = join(profiles, 'web');
 
-  // web profile：清单声明两个插件（semver + github），带 pnpm 锁文件标记
+  
   await mkdir(join(web, 'node_modules', 'dsh-better-sidebar'), { recursive: true });
   await mkdir(join(web, 'node_modules', 'dsh-sidebar-qa'), { recursive: true });
   await writeFile(
@@ -41,7 +41,7 @@ test.before(async () => {
   );
   await writeFile(join(web, 'pnpm-lock.yaml'), '# marker\n');
 
-  // 假 pnpm（跨平台：node 执行的 .mjs 桩）：把 cwd 与参数落盘，模拟成功（不跑真实 pnpm，不联网）
+  
   pnpmLog = join(base, 'pnpm-args.log');
   fakePnpm = join(base, 'fake-pnpm.mjs');
   await writeFile(
@@ -79,7 +79,7 @@ test('persistPluginUpdate：semver 声明回写 ^新版本，其它依赖不动�
 
   const pj = JSON.parse(await readFile(join(web, 'package.json'), 'utf8'));
   assert.equal(pj.dependencies['dsh-better-sidebar'], '^0.13.1');
-  assert.equal(pj.dependencies['dshmarket'], '^1.13.1'); // 其它依赖不动
+  assert.equal(pj.dependencies['dshmarket'], '^1.13.1'); 
   assert.equal(pj.dependencies['dsh-sidebar-qa'], 'github:ChenRuoT/dsh-sidebar-qa');
 
   assert.equal(res.lockfile.length, 1);
@@ -89,7 +89,7 @@ test('persistPluginUpdate：semver 声明回写 ^新版本，其它依赖不动�
   const log = await readFile(pnpmLog, 'utf8');
   assert.match(log, /--lockfile-only/);
   assert.match(log, /--no-frozen-lockfile/);
-  // macOS 上子进程 getcwd() 会把 /var 解析为 /private/var（tmpdir 符号链接），用 realpath 对齐
+  
   assert.ok(log.includes(await realpath(web)), 'pnpm 应在声明该插件的 profile 目录运行');
 });
 
@@ -119,7 +119,7 @@ test('persistPluginUpdate：github 声明的插件钉到 release tag', async () 
 
 test('persistPluginUpdate：清单未声明的插件无法推导 → 跳过不误写', async () => {
   const res = await mod.persistPluginUpdate({
-    name: 'dsh-inline-images', // 不在 dependencies 里，但目录位于 web/node_modules 下
+    name: 'dsh-inline-images', 
     newVersion: '1.1.0',
     targetDir: join(web, 'node_modules', 'dsh-inline-images'),
     gh: null,
@@ -141,7 +141,7 @@ test('persistPluginSpec：回滚路径按记录的旧 spec 写回', async () => 
   assert.equal(res.manifest[0].spec, '^0.12.3');
   const pj = JSON.parse(await readFile(join(web, 'package.json'), 'utf8'));
   assert.equal(pj.dependencies['dsh-better-sidebar'], '^0.12.3');
-  // 回滚同样同步了锁文件
+  
   assert.equal(res.lockfile[0].ok, true);
 });
 

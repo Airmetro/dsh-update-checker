@@ -1,13 +1,3 @@
-﻿# restart-watchdog.ps1 — kill -> relaunch -> watchdog (runs as detached grandchild)
-# Parameters passed via environment variables (avoids -Command/-ArgumentList CJK path encoding issues):
-#   DSH_RESTART_PORT        — 服务监听端口（恢复探测用）
-#   DSH_RESTART_PID         — 当前 dsh web 进程 PID（首选击杀目标）
-#   DSH_RESTART_NODE_FILE   — 派生启动：node 全路径（与 DSH_RESTART_NODE_ARGS 成对）
-#   DSH_RESTART_NODE_ARGS   — 派生启动：进程 argv 剩余部分（JSON 数组）
-#   DSH_RESTART_LAUNCHER    — 回退启动：启动脚本路径（仅当上面两者缺失时使用）
-#   DSH_RESTART_WORKDIR     — 工作目录
-#   DSH_RESTART_LOG         — 日志文件
-#   DSH_RESTART_RESULT      — 结果 JSON 文件（供 /restart-status.json 读取）
 $ErrorActionPreference = 'Continue'
 $port = [int]$env:DSH_RESTART_PORT
 $targetPid = [int]$env:DSH_RESTART_PID
@@ -35,7 +25,6 @@ Write-Result @{ startedAt = $started; port = $port; pid = $targetPid; recovered 
 
 Start-Sleep -Seconds 2
 
-# ── 击杀：首选按 PID（当前进程），再按端口兜底 ──
 if ($targetPid -gt 0) {
   & 'C:\Windows\System32\taskkill.exe' /PID $targetPid /F 2>&1 | Out-Null
   W "killed PID $targetPid"
@@ -51,7 +40,6 @@ if ($conn) {
 }
 Start-Sleep -Seconds 1
 
-# ── 拉起：派生启动（node + argv，最可靠）→ 回退启动脚本 ──
 function Start-Reload {
   if ($nodeFile -and $nodeArgsJson) {
     try {
@@ -79,7 +67,6 @@ if (-not $relaunched) {
   exit 1
 }
 
-# ── 恢复确认：端口监听 + HTTP 200（/dsh-update-checker/status.json），最多 3 轮 × 30 秒 ──
 $recovered = $false
 $attempts = 0
 for ($round = 1; $round -le 3 -and -not $recovered; $round++) {

@@ -1,10 +1,10 @@
-// 单元测试：v1.4.6 新增纯函数 derivePersistedSpec —— 一键更新后推导应写回 profile
-// package.json 的新依赖声明（修复"同一插件反复提醒更新"死循环的 spec 推导层）。
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { derivePersistedSpec } from '../lib/index.js';
 
-// ── semver 风格：保留前导操作符 ─────────────────────────────────────────
+
 test('derivePersistedSpec: ^ 前导操作符保留', () => {
   assert.equal(derivePersistedSpec('^0.12.3', '0.13.1', null), '^0.13.1');
   assert.equal(derivePersistedSpec('^1.13.1', '1.14.1', null), '^1.14.1');
@@ -34,7 +34,7 @@ test('derivePersistedSpec: 预发布版本号照常', () => {
   assert.equal(derivePersistedSpec('^0.12.3', '0.13.1-beta.1', null), '^0.13.1-beta.1');
 });
 
-// ── GitHub 声明：钉到 release tag ───────────────────────────────────────
+
 test('derivePersistedSpec: github 简写 + tag → #tag 钉死', () => {
   const gh = { source: 'github', owner: 'ChenRuoT', repo: 'dsh-sidebar-qa', tag: 'v0.3.0' };
   assert.equal(
@@ -65,7 +65,7 @@ test('derivePersistedSpec: github 声明缺 tag/来源 → 不推导（跳过持
   assert.equal(derivePersistedSpec('github:A/B', '1.0.0', { source: 'github' }), null);
 });
 
-// ── 无法推导 / 防注入 → null ────────────────────────────────────────────
+
 test('derivePersistedSpec: 本地/别名/标签 spec 不推导', () => {
   assert.equal(derivePersistedSpec('file:../dsh-better-sidebar', '0.13.1', null), null);
   assert.equal(derivePersistedSpec('npm:dsh-better-sidebar@^0.12.3', '0.13.1', null), null);

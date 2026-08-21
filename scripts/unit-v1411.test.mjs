@@ -1,14 +1,14 @@
-// 单元测试：v1.4.11 新增 ——
-//   buildNodeExeCandidates（真实 node 候选纯函数：Electron execPath 不被当作 node，issue #8）
-//   resolveNodeExe（web 形态返回自身；DSH_UC_NODE_EXE 逃生口由集成探测验证）
-//   getNpmCli（从真实 node 目录推导 npm-cli.js，多布局）
+
+
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { buildNodeExeCandidates, resolveNodeExe, getNpmCli } from '../lib/index.js';
 
-// ── buildNodeExeCandidates（纯函数）────────────────────────────────────
+
 test('buildNodeExeCandidates: node 形态 execPath 排第一（web 形态直接命中自身）', () => {
   const list = buildNodeExeCandidates(process.execPath, {});
   assert.equal(list[0], process.execPath);
@@ -41,7 +41,7 @@ test('buildNodeExeCandidates: chrome/electron 关键字排除（防把浏览器�
   }
 });
 
-// ── resolveNodeExe / getNpmCli（web 形态：execPath 就是真实 node）────────
+
 test('resolveNodeExe: web 形态返回自身（真实 node）', () => {
   assert.equal(resolveNodeExe(), process.execPath);
   assert.ok(existsSync(resolveNodeExe()));

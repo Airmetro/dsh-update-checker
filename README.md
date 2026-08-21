@@ -78,6 +78,16 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.14** — Download-first main-program update (no more instant process kill), fixed health check, fixed dist/entry verification, cross-process update lock, profiles sync, all source comments removed:
+  - **Download-first flow** (user request): clicking update no longer stops the service immediately. The worker now **downloads everything first while the service stays up** (npm `--dry-run` cache pre-warm, or registry tarball whole-tree download to a local cache), and only then stops the service for a fast extract/install — the page stays usable for the slow network part.
+  - **Health check fixed**: it used `https.get()` on `http://127.0.0.1:3080` which always throws `ERR_INVALID_PROTOCOL` — every successful install was reported as failed and never restarted properly (v1.4.10 latent, first exposed 2026-08-21). Now picks `http`/`https` by URL scheme.
+  - **Dist verification fixed**: the asset walk produced `//assets/...` (double slash) so the referenced assets never matched — the check always false-positived once the frontend was updated. Now builds the path correctly.
+  - **Entry-file verification fixed**: `lib/bin.js` / `lib/index.cjs` / `index.mjs` etc. are now accepted, so packages like `dsh` and `schemastery` are no longer flagged as "empty shells".
+  - **Packages not in the target release** (e.g. `dsh-client-schema-form` / `dsh-client-web-react` have no `0.1.0-rc.8` on npm) are skipped and excluded from the version check instead of failing the update.
+  - **Cross-process update lock file** prevents two concurrent updates (two workers used to race and corrupt the frontend dist).
+  - **Deploy → profiles sync** keeps non-junction (pnpm hoisted) installs consistent after a main-program update.
+  - All source comments removed (per user instruction: never write comments in code).
+
 - **v1.4.13** — npm deadlock fast-fuse: npm resolving the huge dsh dependency tree can deadlock with **no output** (this machine: guaranteed, BUG evidence #7). `runNpm`/`runNpmProgress` now kill the child after **120 s of zero output** (`ENPMDEADLOCK`) instead of waiting out the 600 s timeout, so the main-program update falls back to the whole-tree tarball install after ~2 minutes instead of ~10 — the update completes in roughly 5 minutes instead of 16.
 
 - **v1.4.12** — Make the main-program update actually reach the target version on slow/blocked npm trees + restart usability:

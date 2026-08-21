@@ -1,5 +1,5 @@
-// 单元测试：版本解析 / 语义化比较 / tag→版本 / GitHub repo 解析
-// 全部为纯函数测试，不碰磁盘；由 npm test（node --test scripts/）自动发现执行。
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseVersion, compareVersions, tagToVersion, parseGhRepo } from '../lib/index.js';
@@ -19,7 +19,7 @@ test('parseVersion: 非法输入返回 null', () => {
 
 test('compareVersions: 主/次/补丁为数字比较（非字典序）', () => {
   assert.equal(compareVersions('2.0.0', '1.9.9'), 1);
-  assert.equal(compareVersions('1.10.0', '1.9.0'), 1); // 10 > 9，字典序会判错
+  assert.equal(compareVersions('1.10.0', '1.9.0'), 1); 
   assert.equal(compareVersions('1.2.10', '1.2.9'), 1);
   assert.equal(compareVersions('1.2.3', '1.2.4'), -1);
   assert.equal(compareVersions('1.2.3', '1.2.3'), 0);
@@ -29,13 +29,13 @@ test('compareVersions: 主/次/补丁为数字比较（非字典序）', () => {
 test('compareVersions: 预发布语义（release > prerelease；数字标识符 < 字母标识符）', () => {
   assert.equal(compareVersions('0.1.0', '0.1.0-rc.6'), 1);
   assert.equal(compareVersions('1.0.0-rc.1', '1.0.0'), -1);
-  assert.equal(compareVersions('1.0.0-rc.9', '1.0.0-rc.10'), -1); // rc.9 < rc.10（数字比较）
+  assert.equal(compareVersions('1.0.0-rc.9', '1.0.0-rc.10'), -1); 
   assert.equal(compareVersions('1.0.0-rc.10', '1.0.0-rc.9'), 1);
-  assert.equal(compareVersions('1.0.0-1', '1.0.0-alpha'), -1); // 数字标识符 < 字母标识符
-  assert.equal(compareVersions('1.0.0-alpha', '1.0.0-beta'), -1); // 字母按字典序
+  assert.equal(compareVersions('1.0.0-1', '1.0.0-alpha'), -1); 
+  assert.equal(compareVersions('1.0.0-alpha', '1.0.0-beta'), -1); 
   assert.equal(compareVersions('1.0.0-beta.2', '1.0.0-beta.10'), -1);
-  assert.equal(compareVersions('1.0.0-beta.10', '1.0.0-rc.1'), -1); // beta < rc
-  assert.equal(compareVersions('1.0.0-rc.1.1', '1.0.0-rc.1'), 1); // 更长预发布 > 短
+  assert.equal(compareVersions('1.0.0-beta.10', '1.0.0-rc.1'), -1); 
+  assert.equal(compareVersions('1.0.0-rc.1.1', '1.0.0-rc.1'), 1); 
 });
 
 test('compareVersions: 非法版本按相等处理（0）', () => {
@@ -49,7 +49,7 @@ test('tagToVersion: 去掉 v 前缀并校验 semver 开头', () => {
   assert.equal(tagToVersion('V2.0.0'), '2.0.0');
   assert.equal(tagToVersion('1.2.3'), '1.2.3');
   assert.equal(tagToVersion('v1.2.3-beta.1'), '1.2.3-beta.1');
-  // 只校验开头三段，尾部内容原样保留（既有行为）
+  
   assert.equal(tagToVersion('v1.2.3.4'), '1.2.3.4');
   assert.equal(tagToVersion('v1.2.3-beta.10+meta'), '1.2.3-beta.10+meta');
 });
@@ -65,7 +65,7 @@ test('parseGhRepo: 常见 URL 形态', () => {
   assert.equal(parseGhRepo('git@github.com:owner/repo.git'), 'owner/repo');
   assert.equal(parseGhRepo('https://github.com/a/b.git'), 'a/b');
   assert.equal(parseGhRepo({ url: 'https://github.com/a/b' }), 'a/b');
-  assert.equal(parseGhRepo('a/b'), 'a/b'); // 裸 owner/repo
+  assert.equal(parseGhRepo('a/b'), 'a/b'); 
 });
 
 test('parseGhRepo: 无法解析返回 null', () => {

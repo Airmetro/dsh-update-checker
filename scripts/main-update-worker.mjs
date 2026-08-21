@@ -1,29 +1,31 @@
-// main-update-worker.mjs — 主程序更新的独立工作进程（v1.4.10，修复 BUG-EVIDENCE-20260820）
-//
-// 由 /dsh-update-checker/update 路由经两级 spawn 脱钩启动（R25），与 DSH 主进程完全解耦：
-// 本进程可以安全地杀掉 3080 服务进程再执行 npm install（杀父进程不会连带终止本进程）。
-//
-// 参数经环境变量传递（避开 -Command 中文路径编码问题，R23）：
-//   DSH_UC_UPDATE_ROOT     — 部署根（D:\应用\DeepSeek-Harness）
-//   DSH_UC_UPDATE_TARGET   — 目标版本（如 0.1.0-rc.8）
-//   DSH_UC_UPDATE_BACKUP   — 更新前备份目录
-//   DSH_UC_UPDATE_PROGRESS — 进度文件路径
-//   DSH_UC_UPDATE_OPS      — 操作日志路径
-//   DSH_UC_UPDATE_DSH_HOME — DSH 用户数据目录
-//   DSH_UC_UPDATE_SELF_DIR — 本插件包目录（lib/ 的父目录）
-//
-// 流程（安全状态机）：停服务 → install(超时) → 回读校验 → 完整性校验 → 声明同步 → 重启 → 健康检查。
-// 任一失败：回滚备份 + 重启服务 + 写错误进度与 ops 日志。
 
-import { writeFile, appendFile, rm, mkdir, readdir, lstat, readFile, cp } from "node:fs/promises";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { writeFile, appendFile, rm, mkdir, mkdtemp, readdir, lstat, readFile, cp, realpath } from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import http from "node:http";
 import https from "node:https";
 import { gunzipSync } from "node:zlib";
-// v1.4.11：node/npm-cli 解析统一走 lib 的 resolveNodeExe/getNpmCli（issue #8：
-// Electron 下 process.execPath 是 electron.exe，不能直接当 node 跑 npm）。
+
+
 import { resolveNodeExe, getNpmCli } from "../lib/index.js";
 
 const ROOT = process.env.DSH_UC_UPDATE_ROOT;
@@ -51,7 +53,7 @@ async function writeProgress(patch) {
     progressCache = { at: Date.now(), running: true, ...(progressCache || {}), ...patch };
     await writeFile(PROGRESS_FILE, JSON.stringify(progressCache, null, 2), "utf8");
   } catch {
-    /* 进度写失败静默 */
+    
   }
 }
 async function clearProgress() {
@@ -59,7 +61,7 @@ async function clearProgress() {
   try {
     await rm(PROGRESS_FILE, { force: true });
   } catch {
-    /* 不存在也正常 */
+    
   }
 }
 async function opsLog(entry) {
@@ -68,11 +70,11 @@ async function opsLog(entry) {
     const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
     await appendFile(OPS_FILE, line + "\n", "utf8");
   } catch {
-    /* 日志写失败静默 */
+    
   }
 }
 
-// 定位 npm-cli.js（复用 lib/index.js 的多布局逻辑；Electron 形态解析真实 node）
+
 const NPM_CLI = getNpmCli();
 
 function runNpm(args, { cwd, timeoutMs = 600000, onProgress } = {}) {
@@ -88,17 +90,17 @@ function runNpm(args, { cwd, timeoutMs = 600000, onProgress } = {}) {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      try { child.kill(); } catch { /* 已退出 */ }
+      try { child.kill(); } catch {  }
     }, timeoutMs);
-    // v1.4.13 死锁熔断：npm 对本机 dsh 大依赖树解析死锁（长时间无任何输出），
-    // 不再傻等 600s——连续 120s 无输出即 kill，走 tarball 整树回退。
+    
+    
     let deadlocked = false;
     let lastActivity = Date.now();
     const markActivity = () => { lastActivity = Date.now(); };
     const deadlockTimer = setInterval(() => {
       if (!deadlocked && !timedOut && Date.now() - lastActivity > 120000) {
         deadlocked = true;
-        try { child.kill(); } catch { /* 已退出 */ }
+        try { child.kill(); } catch {  }
       }
     }, 15000);
     child.stdout.on("data", (d) => { stdout += d.toString("utf8"); markActivity(); });
@@ -155,13 +157,13 @@ async function exists(p) {
   }
 }
 
-// 部署形态：local（有 package.json 声明依赖）→ 原位 npm install；global → npm install -g
+
 function deployType(root) {
   try {
     const pj = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     if (pj && (pj.name || pj.dependencies || pj.devDependencies || pj.optionalDependencies)) return "local";
   } catch {
-    /* 无 package.json → global */
+    
   }
   return "global";
 }
@@ -188,7 +190,7 @@ function compareVersions(a, b) {
     if (pa.core[i] !== pb.core[i]) return pa.core[i] > pb.core[i] ? 1 : -1;
   }
   if (pa.pre.length === 0 && pb.pre.length === 0) return 0;
-  if (pa.pre.length === 0) return 1; // 正式版 > 预发布
+  if (pa.pre.length === 0) return 1; 
   if (pb.pre.length === 0) return -1;
   for (let i = 0; i < Math.max(pa.pre.length, pb.pre.length); i++) {
     const x = pa.pre[i] || "0";
@@ -204,7 +206,7 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// 停服务：taskkill 3080 监听进程 + 等待端口释放（全路径，绕 PATH 损坏）
+
 async function stopService() {
   const port = 3080;
   const ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
@@ -226,7 +228,7 @@ async function stopService() {
     if (pid === process.pid) continue;
     try {
       spawn("C:\\Windows\\System32\\taskkill.exe", ["/PID", String(pid), "/F"], { windowsHide: true, stdio: "ignore" });
-    } catch { /* 单个失败继续 */ }
+    } catch {  }
   }
   const deadline = Date.now() + 20000;
   let still = true;
@@ -238,7 +240,7 @@ async function stopService() {
   return { ok: !still, error: still ? `port ${port} still listening` : null };
 }
 
-// 启动服务：绝对路径 cmd 启动 start-dsh.cmd；等端口监听
+
 async function startService() {
   const port = 3080;
   try {
@@ -273,7 +275,9 @@ async function startService() {
   return { ok: !!pid, pid, error: pid ? null : "service did not listen within 30s" };
 }
 
-// 完整性校验（与 lib/index.js verifyDeployTree 同逻辑的精简版）
+
+
+
 async function verifyTree() {
   const problems = [];
   const nm = join(ROOT, "node_modules", "@deepseek-ai");
@@ -286,8 +290,20 @@ async function verifyTree() {
     problems.push(`@deepseek-ai dir missing`);
     return { ok: false, problems };
   }
+  const skippedPkgs = new Set();
+  try {
+    const sk = JSON.parse(
+      await readFile(join(DSH_HOME, "dsh-update-checker-skipped-pkgs.json"), "utf8")
+    );
+    if (Array.isArray(sk && sk.skipped)) {
+      for (const n of sk.skipped) skippedPkgs.add(n);
+    }
+  } catch {
+    
+  }
   for (const n of names) {
     if (!n.startsWith("dsh-")) continue;
+    if (skippedPkgs.has(n)) continue; 
     const pj = await readJson(join(nm, n, "package.json"));
     if (!pj) { problems.push(`${n} package.json missing`); continue; }
     if (pj.version !== TARGET) problems.push(`${n} ${pj.version} != ${TARGET}`);
@@ -302,7 +318,11 @@ async function verifyTree() {
       for (const e of ents) {
         const full = join(dir, e.name);
         if (e.isDirectory()) await walk(full);
-        else present.add("/" + full.split(dist).pop().replace(/\\/g, "/"));
+        else {
+          let rel = full.slice(dist.length).replace(/\\/g, "/");
+          if (!rel.startsWith("/")) rel = "/" + rel;
+          present.add(rel);
+        }
       }
     };
     await walk(dist);
@@ -315,19 +335,29 @@ async function verifyTree() {
   } catch {
     problems.push("dsh-web-frontend dist/index.html unreadable");
   }
+  
+  
+  
+  const ENTRY_NAMES = ["client.js", "index.js", "index.cjs", "index.mjs", "bin.js", "main.js", "server.js"];
   for (const n of names) {
+    if (skippedPkgs.has(n)) continue; 
     const pkgDir = join(nm, n);
     if (!(await exists(join(pkgDir, "lib")))) continue;
-    const entry =
-      (await exists(join(pkgDir, "lib", "client.js"))) ||
-      (await exists(join(pkgDir, "lib", "index.js"))) ||
-      (await exists(join(pkgDir, "client.js")));
-    if (!entry) problems.push(`${n} empty shell (no client.js/index.js)`);
+    let entry = false;
+    for (const en of ENTRY_NAMES) {
+      if (await exists(join(pkgDir, "lib", en))) { entry = true; break; }
+    }
+    if (!entry) {
+      for (const en of ENTRY_NAMES) {
+        if (await exists(join(pkgDir, en))) { entry = true; break; }
+      }
+    }
+    if (!entry) problems.push(`${n} empty shell (no lib entry file)`);
   }
   return { ok: problems.length === 0, problems };
 }
 
-// 声明同步：package.json 依赖改为精确版本
+
 async function syncDeclaration() {
   const pjPath = join(ROOT, "package.json");
   try {
@@ -338,17 +368,18 @@ async function syncDeclaration() {
       await opsLog({ op: "main-decl-synced", version: TARGET });
     }
   } catch {
-    /* 无 package.json → 无需同步 */
+    
   }
 }
 
-// 健康检查：HTTP 200 + 资源 Content-Type 非 text/html
+
 async function healthCheck() {
   const base = "http://127.0.0.1:3080";
   const problems = [];
   const fetchOnce = (url) =>
     new Promise((resolve) => {
-      const req = https.get(url, { timeout: 8000 }, (res) => {
+      const mod = String(url).startsWith("https:") ? https : http;
+      const req = mod.get(url, { timeout: 8000 }, (res) => {
         let ct = res.headers["content-type"] || "";
         let body = "";
         res.on("data", (d) => { body += d; if (body.length > 512 * 1024) res.destroy(); });
@@ -372,7 +403,7 @@ async function healthCheck() {
   return { ok: problems.length === 0, problems };
 }
 
-// 回滚：从备份重装旧版本
+
 async function rollbackFromBackup() {
   try {
     const meta = await readJson(join(BACKUP, "backup-meta.json"));
@@ -392,7 +423,7 @@ async function rollbackFromBackup() {
           pj.dependencies[PACKAGE] = meta.installed;
           await writeFile(pjPath, JSON.stringify(pj, null, 2), "utf8");
         }
-      } catch { /* noop */ }
+      } catch {  }
       return { ok: true, installed };
     }
     return { ok: false, error: `rollback did not reach ${meta.installed}` };
@@ -401,19 +432,19 @@ async function rollbackFromBackup() {
   }
 }
 
-// ── v1.4.10 tarball 直连回退（D1 增强）：npm install 对本机 dsh 大依赖树可能死锁/超时
-// （BUG 证据 7），此时改用 registry tarball 直连下载 dsh 主包解压覆盖 + 同步声明。
-// 只覆盖 @deepseek-ai/dsh 本体（lib/package.json 等），其余 @deepseek-ai 包保持原版本
-// （一致树无需整树升级；若版本不一致由后续 verify 检出并回滚）。
-// v1.4.12 tarball 直连回退（D1 增强，整树版）：npm install 对本机 dsh 大依赖树可能死锁/超时
-// （BUG 证据 7），此时改用 registry tarball 直连下载 **全部** @deepseek-ai/dsh-* 包到目标版本
-// 解压覆盖 + 同步声明。v1.4.10 的回退只更新 @deepseek-ai/dsh 主包，导致完整性校验
-// （verifyDeployTree：所有 dsh-* 必须 = 目标版本）必然失败 → 回滚 → "重启后还是旧版本"。
-// 现在整树更新：主包 + 所有版本 ≠ 目标的 dsh-* 子包逐个 tarball 覆盖。
+
+
+
+
+
+
+
+
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 下载并解压单个 @deepseek-ai/<pkg>@<version> 的 tarball，覆盖到 <nmDir>/<pkg>（先备份再替换）。
-async function installOneTarball(pkgName, nmDir, version) {
+
+async function downloadTarballToFile(pkgName, version, destFile) {
   const url = `https://registry.npmjs.org/@deepseek-ai%2F${pkgName}/-/${pkgName}-${version}.tgz`;
   const buf = await new Promise((resolve, reject) => {
     const doFetch = async (triesLeft) => {
@@ -429,8 +460,13 @@ async function installOneTarball(pkgName, nmDir, version) {
     };
     doFetch(3);
   });
-  // 解压 tar.gz（纯 node）
-  const gz = gunzipSync(buf);
+  await writeFile(destFile, buf);
+  return buf.length;
+}
+
+
+async function extractTarballFile(tarballFile, pkgName, nmDir, version) {
+  const gz = gunzipSync(readFileSync(tarballFile));
   const entries = [];
   let off = 0;
   while (off + 512 <= gz.length) {
@@ -443,8 +479,8 @@ async function installOneTarball(pkgName, nmDir, version) {
   }
   const pkgDir = join(nmDir, pkgName);
   const bak = pkgDir + ".bak-tarball";
-  try { await rm(bak, { recursive: true, force: true }); } catch { /* noop */ }
-  try { await cp(pkgDir, bak, { recursive: true }); } catch { /* 备份失败继续 */ }
+  try { await rm(bak, { recursive: true, force: true }); } catch {  }
+  try { await cp(pkgDir, bak, { recursive: true }); } catch {  }
   await rm(pkgDir, { recursive: true, force: true });
   await mkdir(pkgDir, { recursive: true });
   for (const e of entries) {
@@ -456,7 +492,7 @@ async function installOneTarball(pkgName, nmDir, version) {
   }
   const pj = await readJson(join(pkgDir, "package.json"));
   if (!pj || pj.version !== version) {
-    // 覆盖失败：还原备份
+    
     await rm(pkgDir, { recursive: true, force: true });
     if (await exists(bak)) await cp(bak, pkgDir, { recursive: true });
     throw new Error(`${pkgName} tarball version mismatch (${pj && pj.version} != ${version})`);
@@ -465,9 +501,8 @@ async function installOneTarball(pkgName, nmDir, version) {
   return pj.version;
 }
 
-// 整树 tarball 更新：主包 + 所有版本 ≠ TARGET 的 dsh-* 子包；返回 { updated, failed }。
-// failed 项不在此中止——由后续完整性校验统一判定（任一包没到位 → verify 失败 → 回滚）。
-async function installTreeFromTarballs(onProgress) {
+
+async function collectUpdateTodo() {
   const nm = join(ROOT, "node_modules", "@deepseek-ai");
   let names = [];
   try {
@@ -479,32 +514,115 @@ async function installTreeFromTarballs(onProgress) {
   }
   const todo = [];
   for (const n of names) {
-    if (n === "dsh") { todo.push(n); continue; } // 主包
-    if (!n.startsWith("dsh-")) continue;          // 基础库（cordis/cosmokit 等）保持原版本
+    if (n === "dsh") { todo.push(n); continue; } 
+    if (!n.startsWith("dsh-")) continue;
     const pj = await readJson(join(nm, n, "package.json"));
-    if (pj && pj.version === TARGET) continue;    // 已到位，跳过
+    if (pj && pj.version === TARGET) continue;
     todo.push(n);
   }
-  const updated = [];
+  return todo;
+}
+
+
+async function downloadTarballsToCache(todo, cacheDir, onProgress) {
+  const ok = [];
   const failed = [];
+  const skipped = [];
   for (let i = 0; i < todo.length; i++) {
     const n = todo[i];
-    if (onProgress) {
-      onProgress({ current: i + 1, total: todo.length, name: n });
-    }
+    if (onProgress) onProgress({ current: i + 1, total: todo.length, name: n });
+    const dest = join(cacheDir, `${n}-${TARGET}.tgz`);
     try {
-      await installOneTarball(n, nm, TARGET);
-      updated.push(n);
+      await downloadTarballToFile(n, TARGET, dest);
+      ok.push(n);
     } catch (err) {
-      failed.push({ name: n, error: String((err && err.message) || err) });
-      await opsLog({
-        op: "main-tarball-pkg-failed",
-        pkg: n,
-        error: String((err && err.message) || err),
-      });
+      const msg = String((err && err.message) || err);
+      if (msg.includes("HTTP 404")) {
+        skipped.push(n);
+        await opsLog({ op: "main-tarball-pkg-skipped", pkg: n, error: msg });
+      } else {
+        failed.push({ name: n, error: msg });
+        await opsLog({ op: "main-tarball-pkg-failed", pkg: n, error: msg });
+      }
     }
   }
-  return { updated, failed, total: todo.length };
+  try {
+    await writeFile(
+      join(DSH_HOME, "dsh-update-checker-skipped-pkgs.json"),
+      JSON.stringify({ target: TARGET, skipped }, null, 2),
+      "utf8"
+    );
+  } catch {  }
+  return { ok, failed, skipped, total: todo.length };
+}
+
+
+async function extractTreeFromCache(cacheDir, onProgress) {
+  const nm = join(ROOT, "node_modules", "@deepseek-ai");
+  const files = (await readdir(cacheDir)).filter((f) => f.endsWith(`-${TARGET}.tgz`));
+  const updated = [];
+  const failed = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const name = f.slice(0, -(TARGET.length + 5)); 
+    if (onProgress) onProgress({ current: i + 1, total: files.length, name });
+    try {
+      await extractTarballFile(join(cacheDir, f), name, nm, TARGET);
+      updated.push(name);
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      failed.push({ name, error: msg });
+      await opsLog({ op: "main-tarball-extract-failed", pkg: name, error: msg });
+    }
+  }
+  return { updated, failed, total: files.length };
+}
+
+
+
+
+async function syncProfilesToDeploy() {
+  const profileNm = process.env.DSH_UC_UPDATE_PROFILE_NM;
+  if (!profileNm) return { skipped: true, reason: "no profile node_modules env" };
+  const deployNm = join(ROOT, "node_modules", "@deepseek-ai");
+  let names = [];
+  try {
+    names = (await readdir(deployNm, { withFileTypes: true }))
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return { skipped: true, reason: "deploy @deepseek-ai unreadable" };
+  }
+  const results = [];
+  for (const n of names) {
+    if (n !== "dsh" && !n.startsWith("dsh-")) continue;
+    const src = join(deployNm, n);
+    const dst = join(profileNm, "@deepseek-ai", n);
+    try {
+      if (await exists(dst)) {
+        const [rpS, rpD] = await Promise.all([
+          realpath(src).catch(() => null),
+          realpath(dst).catch(() => null),
+        ]);
+        if (rpS && rpD && rpS === rpD) {
+          results.push({ name: n, ok: true, skipped: "junction" });
+          continue;
+        }
+      }
+      await cp(src, dst, { recursive: true, force: true });
+      results.push({ name: n, ok: true });
+    } catch (err) {
+      results.push({ name: n, ok: false, error: String((err && err.message) || err) });
+    }
+  }
+  const failed = results.filter((r) => !r.ok);
+  await opsLog({
+    op: "main-profile-sync",
+    total: results.length,
+    junctionSkipped: results.filter((r) => r.skipped).length,
+    failed: failed.map((f) => f.name),
+  });
+  return results;
 }
 
 async function fail(msg, code, extra = {}) {
@@ -517,87 +635,122 @@ async function fail(msg, code, extra = {}) {
     code,
   });
   await opsLog({ op: "main-update-error", error: truncate(msg, 3000), code, ...extra });
-  // 尽力恢复服务
+  
   try {
     const rs = await startService();
     await opsLog({ op: "main-update-crash-recovery", startOk: rs.ok, error: rs.error || null });
-  } catch { /* 恢复失败也上报主错误 */ }
+  } catch {  }
   return { ok: false, error: msg, code };
 }
 
-// ── 主流程 ─────────────────────────────────────────────────────────────
+
 async function main() {
   await opsLog({ op: "main-update-worker-start", target: TARGET, root: ROOT, backup: BACKUP, pid: process.pid });
+  const spec = `${PACKAGE}@${TARGET}`;
+  const type = deployType(ROOT);
+  const baseArgs = ["install"];
+  if (type === "global") baseArgs.push("-g");
+  baseArgs.push(spec, "--no-audit", "--no-fund", "--loglevel=http");
+  let installVia = "npm";
+  let cacheDir = null;
   try {
-    // 1) 停服务（D2）
-    await writeProgress({ phase: "stop", label: "停止 dsh 服务（避免文件占用）…", percent: 8 });
+    
+    await writeProgress({ phase: "download", label: "正在下载新版本（服务不中断）…", percent: 4 });
+    let npmReady = false;
+    try {
+      
+      await runNpm([...baseArgs, "--dry-run"], { cwd: ROOT, timeoutMs: 150000 });
+      npmReady = true;
+      await opsLog({ op: "main-npm-dryrun-ok", type });
+    } catch (err) {
+      await opsLog({
+        op: "main-npm-dryrun-fail",
+        error: truncate(String((err && err.message) || err), 500),
+        code: err && err.code,
+      });
+    }
+    if (!npmReady) {
+      
+      installVia = "tarball";
+      cacheDir = await mkdtemp(join(tmpdir(), "duc-dl-"));
+      const todo = await collectUpdateTodo();
+      const dl = await downloadTarballsToCache(todo, cacheDir, (p) => {
+        const percent = Math.min(60, 4 + Math.round((p.current / Math.max(1, p.total)) * 56));
+        writeProgress({
+          phase: "download",
+          label: "正在下载新版本（服务不中断）…",
+          percent,
+          detail: `已下载 ${p.current}/${p.total} 个包（${p.name}）`,
+          count: { done: p.current, total: p.total },
+        });
+      });
+      if (dl.ok.length === 0 && dl.failed.length > 0) {
+        return await fail(
+          `tarball download failed: ${dl.failed.map((f) => `${f.name}: ${f.error}`).join("; ")}`,
+          "E_DOWNLOAD",
+          { failed: dl.failed }
+        );
+      }
+      await opsLog({
+        op: "main-tarball-download-ok",
+        downloaded: dl.ok.length,
+        total: dl.total,
+        skipped: dl.skipped,
+        failed: dl.failed.map((f) => f.name),
+      });
+    }
+
+    
+    await writeProgress({ phase: "stop", label: "下载完成，正在停止服务…", percent: 64 });
     const stop = await stopService();
     if (!stop.ok) return await fail(`failed to stop service: ${stop.error}`, "E_STOP");
     await opsLog({ op: "main-update-stop-service", ok: true });
 
-    // 2) install（D1：带超时；npm 对 dsh 大依赖树可能死锁 → 自动 tarball 直连回退）
-    const spec = `${PACKAGE}@${TARGET}`;
-    const type = deployType(ROOT);
-    const args = ["install"];
-    if (type === "global") args.push("-g");
-    args.push(spec, "--no-audit", "--no-fund", "--loglevel=http");
-    await writeProgress({ phase: "install", label: "正在安装新版本…", percent: 15 });
+    
     let output = "";
-    let installVia = "npm";
-    try {
-      const total = 587;
-      const { stdout, stderr } = await runNpm(args, { cwd: ROOT, timeoutMs: 600000, onProgress: (p) => {
-        const percent = Math.min(70, 15 + Math.round((p.httpCount / total) * 55));
-        writeProgress({
-          phase: "install",
-          label: "正在安装新版本…",
-          percent,
-          detail: p.httpCount ? `已解析 ${p.httpCount}/${total} 个包` : "npm 安装中…",
-          count: { done: p.httpCount, total },
-        });
-      } });
-      output = truncate((stdout || "") + (stderr || ""), 3000);
-    } catch (err) {
-      // npm 失败/超时 → tarball 整树直连回退（BUG 证据 7：本机 npm 对该树解析死锁；
-      // v1.4.12：回退更新全部 dsh-* 包到目标版本，否则完整性校验必然失败回滚）
-      await opsLog({
-        op: "main-install-npm-failed-fallback-tarball",
-        error: String(err && err.message ? err.message : err),
-        code: err && err.code,
-      });
-      await writeProgress({ phase: "install-tarball", label: "npm 超时，改用 registry 直连安装（整树）…", percent: 40 });
+    if (installVia === "npm") {
+      await writeProgress({ phase: "install", label: "正在安装新版本…", percent: 70 });
       try {
-        const tb = await installTreeFromTarballs((p) => {
-          const percent = Math.min(80, 40 + Math.round((p.current / Math.max(1, p.total)) * 40));
+        const total = 587;
+        const { stdout, stderr } = await runNpm(baseArgs, { cwd: ROOT, timeoutMs: 600000, onProgress: (p) => {
+          const percent = Math.min(80, 70 + Math.round((p.httpCount / total) * 10));
           writeProgress({
-            phase: "install-tarball",
-            label: "registry 直连安装中…",
+            phase: "install",
+            label: "正在安装新版本…",
             percent,
-            detail: `已更新 ${p.current}/${p.total} 个 @deepseek-ai 包（${p.name}）`,
-            count: { done: p.current, total: p.total },
+            detail: p.httpCount ? `已解析 ${p.httpCount}/${total} 个包` : "npm 安装中…",
+            count: { done: p.httpCount, total },
           });
-        });
-        installVia = "tarball";
-        output = `tarball whole-tree install: ${tb.updated.length}/${tb.total} packages updated` +
-          (tb.failed.length ? ` (failed: ${tb.failed.map((f) => f.name).join(", ")})` : "");
-        await opsLog({
-          op: "main-install-tarball-tree-ok",
-          updated: tb.updated.length,
-          total: tb.total,
-          failed: tb.failed,
-        });
-      } catch (tbErr) {
+        } });
+        output = truncate((stdout || "") + (stderr || ""), 3000);
+      } catch (err) {
+        
         const rollback = await rollbackFromBackup();
         return await fail(
-          `install failed (npm: ${err && err.code ? err.code : "unknown"}, tarball: ${tbErr.message})` +
+          `install failed (${(err && err.code) || "unknown"}): ${err && err.message ? err.message : err}` +
             (rollback.ok ? " — restored from backup" : " — ROLLBACK ALSO FAILED"),
           (err && err.code) || "E_INSTALL",
           { stderr: err && err.stderr ? truncate(err.stderr, 2000) : null, rollbackOk: rollback.ok }
         );
       }
+    } else {
+      await writeProgress({ phase: "install", label: "正在应用新版本…", percent: 72 });
+      const ex = await extractTreeFromCache(cacheDir, (p) => {
+        const percent = Math.min(82, 70 + Math.round((p.current / Math.max(1, p.total)) * 12));
+        writeProgress({
+          phase: "install",
+          label: "正在应用新版本…",
+          percent,
+          detail: `已应用 ${p.current}/${p.total} 个包（${p.name}）`,
+          count: { done: p.current, total: p.total },
+        });
+      });
+      output = `tarball whole-tree: ${ex.updated.length}/${ex.total} packages applied` +
+        (ex.failed.length ? ` (failed: ${ex.failed.map((f) => f.name).join(", ")})` : "");
+      await opsLog({ op: "main-install-tarball-tree-ok", updated: ex.updated.length, total: ex.total, failed: ex.failed });
     }
 
-    // 3) 回读校验
+    
     let installed = await readInstalledVersion();
     if (!installed || compareVersions(installed, TARGET) !== 0) {
       const rollback = await rollbackFromBackup();
@@ -609,8 +762,8 @@ async function main() {
       );
     }
 
-    // 4) 完整性校验（D3）
-    await writeProgress({ phase: "verify", label: "校验安装完整性…", percent: 82 });
+    
+    await writeProgress({ phase: "verify", label: "校验安装完整性…", percent: 85 });
     const verify = await verifyTree();
     if (!verify.ok) {
       const rollback = await rollbackFromBackup();
@@ -622,11 +775,12 @@ async function main() {
       );
     }
 
-    // 5) 声明同步（D5）
-    await writeProgress({ phase: "sync-decl", label: "同步 package.json 声明…", percent: 90 });
+    
+    await writeProgress({ phase: "sync-decl", label: "同步版本声明…", percent: 90 });
     await syncDeclaration();
+    await syncProfilesToDeploy();
 
-    // 6) 重启 + 健康检查（D4）
+    
     await writeProgress({ phase: "restart", label: "重启 dsh 服务…", percent: 94 });
     const rs = await startService();
     await writeProgress({ phase: "health", label: "健康检查…", percent: 97 });
@@ -650,6 +804,12 @@ async function main() {
     return { ok: true, installed, latest: TARGET, type };
   } catch (err) {
     return await fail(String(err && err.message ? err.message : err), err && err.code);
+  } finally {
+    if (cacheDir) await rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+    
+    try {
+      await rm(join(DSH_HOME, "dsh-update-checker-update.lock"), { force: true });
+    } catch {  }
   }
 }
 

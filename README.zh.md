@@ -78,6 +78,16 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.14** — 下载优先的主程序更新（不再一点击就杀进程）、健康检查/校验器修复、跨进程更新锁、profiles 同步、全源码注释移除：
+  - **下载优先流程**（用户要求）：点更新不再立即停服务——worker 先在服务运行中把东西**全部下载/预热到本地缓存**（npm `--dry-run` 预热，或 registry tarball 整树下载），下载完才停服做快速应用；网络耗时阶段页面保持可用。
+  - **健康检查修复**：此前用 `https.get()` 请求 `http://127.0.0.1:3080`，必然抛 `ERR_INVALID_PROTOCOL`——每次安装成功后最后一步健康检查崩、误报失败且不自动重启（v1.4.10 潜伏，2026-08-21 首次暴露）。现按 URL 协议选 http/https。
+  - **dist 校验修复**：资源遍历产生 `//assets/...`（双斜杠）导致引用永远匹配不上，前端更新成功后必被误判缺失。现已正确构造路径。
+  - **入口校验修复**：接受 `lib/bin.js` / `lib/index.cjs` / `index.mjs` 等常见入口，`dsh`、`schemastery` 不再被误报"空壳"。
+  - **不在目标发布集的包**（如 `dsh-client-schema-form` / `dsh-client-web-react` 在 npm 上无 `0.1.0-rc.8`）跳过并排除其版本校验，不再导致更新失败。
+  - **跨进程更新锁文件**：防止两个并发更新（此前两个 worker 并发会互相踩踏、损坏前端 dist）。
+  - **部署树 → profiles 同步**：非 junction（pnpm hoisted）安装在主程序更新后保持两侧一致。
+  - 全部源码注释移除（用户指令：代码中不写注释）。
+
 - **v1.4.13** — npm 死锁快速熔断：npm 解析 dsh 超大依赖树可能**无任何输出地死锁**（本机必现，BUG 证据 7）。`runNpm`/`runNpmProgress` 现在连续 **120 秒无输出即 kill**（`ENPMDEADLOCK`），不再傻等 600 秒超时——主程序更新约 2 分钟就进入整树 tarball 回退，整体从 ~16 分钟缩短到 ~5 分钟。
 
 - **v1.4.12** — 让主程序更新在 npm 卡死的机器上真正到达目标版本 + 重启可用性：

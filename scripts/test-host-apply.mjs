@@ -1,4 +1,4 @@
-// 隔离测试：导入源码 Host 模块，用假 ctx 驱动 apply（含 inject 路径）
+
 const plugin = (await import("../lib/index.js")).default;
 console.log("plugin name:", plugin.name);
 

@@ -1,12 +1,12 @@
-// 单元测试：v1.4.9 新增纯函数/探测函数 ——
-//   pickTargetSource（两源交叉：非平局按版本较高者；平局按默认下载源 github/npm/smart）
-//   probeNpmGlobalRoot（npm 全局根探测：DSH_UC_NPM_GLOBAL_ROOT 测试钩子 + 真实 npm root -g 回退）
-// v1.4.10 追加：pickMainLatest（主程序取最高版本含预发布）、mainTagToVersion（dsh-v 前缀 tag）
+
+
+
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pickTargetSource, pickMainLatest, mainTagToVersion } from '../lib/index.js';
 
-// ── pickTargetSource ────────────────────────────────────────────────────
+
 test('pickTargetSource: 非平局按版本较高者（github 高）', () => {
   const r = pickTargetSource('1.0.0', '2.0.0', 'github');
   assert.deepEqual(r, { target: '2.0.0', src: 'github', source: 'both' });
@@ -43,7 +43,7 @@ test('pickTargetSource: 双 null → 全空', () => {
   assert.deepEqual(pickTargetSource(null, null, 'github'), { target: null, src: null, source: null });
 });
 
-// ── pickMainLatest（v1.4.10）───────────────────────────────────────────
+
 test('pickMainLatest: 无稳定版时取最高版本（含预发布，next 通道 rc 也计入）', () => {
   const doc = {
     'dist-tags': { latest: '0.1.0-rc.7', next: '0.1.0-rc.8' },
@@ -53,7 +53,7 @@ test('pickMainLatest: 无稳定版时取最高版本（含预发布，next 通�
       '0.1.0-rc.8': {},
     },
   };
-  // 主程序忽略稳定版优先：即使 latest=rc.7，也要看到 next 通道更高的 rc.8
+  
   assert.equal(pickMainLatest(doc), '0.1.0-rc.8');
 });
 
@@ -62,7 +62,7 @@ test('pickMainLatest: 有稳定版时仍取最高版本（含 rc 比较规则）
     'dist-tags': { latest: '1.0.0' },
     versions: { '1.0.0': {}, '1.1.0-rc.1': {}, '0.9.9': {} },
   };
-  assert.equal(pickMainLatest(doc), '1.1.0-rc.1'); // rc.1 高于 1.0.0 与 0.9.9
+  assert.equal(pickMainLatest(doc), '1.1.0-rc.1'); 
 });
 
 test('pickMainLatest: 空 packument → null', () => {
@@ -76,7 +76,7 @@ test('pickMainLatest: 排序与 rc 序号（rc.10 > rc.9）', () => {
   assert.equal(pickMainLatest(doc), '0.1.0-rc.10');
 });
 
-// ── mainTagToVersion（v1.4.10）────────────────────────────────────────
+
 test('mainTagToVersion: 主程序 dsh-v 前缀 tag', () => {
   assert.equal(mainTagToVersion('dsh-v0.1.0-rc.8'), '0.1.0-rc.8');
   assert.equal(mainTagToVersion('dsh-v1.2.3'), '1.2.3');
