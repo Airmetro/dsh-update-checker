@@ -57,6 +57,8 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 - **`$DSH_HOME`** — `profiles` 根目录的父目录（状态文件、备份、重启日志都在这里）。
 - **组合文件** — 默认 `$DSH_HOME/profiles/web/cordis.patch.yml`。
 - **部署根** — 先 junction `realpath` 解析，再 `DSH_DEPLOY_ROOT`，然后 `process.cwd()`，最后 **npm 全局前缀**（`npm root -g` 的父目录，v1.4.9 起支持 npm -g 全局安装形态）。
+  - systemd / npm -g 逃生口：自动探测万一没命中你的布局时，把 `DSH_DEPLOY_ROOT` 设为包含 `node_modules/@deepseek-ai/dsh` 的目录（Linux 上通常是 `<npm prefix>/lib`）。
+- **node / npm 可执行文件** — `resolveNodeExe()` 定位真实 node：`DSH_UC_NODE_EXE` 覆盖 → `npm_node_execpath` → `process.execPath`（若确实是 node）→ 常见安装目录 → PATH。这就是 DSH Desktop（Electron，`process.execPath` 是 electron.exe）能跑 npm 更新插件的原因；若你的桌面端把 node 打包在别处，设 `DSH_UC_NODE_EXE` 指向它即可。
 - **重启启动器** — 自适应：在部署根下探测常见启动脚本名；web 端口读取运行中的 `webServer.port`。
 
 ## 平台与安装布局支持
@@ -75,6 +77,14 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json`），主程序与插件都有对应回滚路由。
 
 ## 更新日志
+
+- **v1.4.11** — 修复「点更新后立即显示更新完成、重启后还是旧版本」、DSH Desktop（Electron）插件更新失败、横幅双检查门控：
+  - **主程序更新不再提前重启**（[#9](https://github.com/Airmetro/dsh-update-checker/issues/9)，Airmetro 反馈）：`/update` 只是**启动**了独立 worker（停服务→安装→校验→重启→健康检查）。此前客户端把 `/update` 的 200 当作"更新完成"，立刻再调 `/restart`，与 worker 的安装并发（文件占用 → 安装失败回滚 → 服务以旧版本被拉起）——这就是"点更新→立即显示完成→手动重启后还是旧版本"的根因。现在横幅与设置页都轮询 `update-progress.json`，直到 worker 报 `phase=done/error` 才显示"更新完成"并刷新页面；重启由 worker 自己完成，不再需要单独的 restart 调用。
+  - **DSH Desktop（Electron）插件更新修复**（[#8](https://github.com/Airmetro/dsh-update-checker/issues/8)）：所有 npm/pnpm 子进程原来都用 `process.execPath` 启动——Electron 下那是 electron.exe，npm 根本没运行（报 `WSALookupServiceBegin…10108` / "npm install produced no package"）。新增 `resolveNodeExe()` 定位真实 node（`DSH_UC_NODE_EXE` 覆盖 → `npm_node_execpath` → execPath 若确实是 node → 常见安装目录 → PATH），`getNpmCli()` 从真实 node 目录推导 npm-cli.js；主程序更新 worker 也改用真实 node 启动。
+  - **横幅只在主程序与插件都检查完后显示**：主程序横幅与插件横幅现在都等**两个检查都完成**才显示（不再两段式弹出）。插件检查也改为并发（此前逐个 await）。
+  - **设置页「显示与控制」立即渲染**：开关与下载源下拉框立即按默认值显示，不再等 `settings.json` 网络往返（此前 settings 为 null 时整个控制区是空的）。
+  - `probeNpmGlobalRoot` 失败改为 60 秒冷却（npm -g 布局仍覆盖）。
+  - 新增纯函数 `buildNodeExeCandidates()`（带单元测试）；测试 110 通过。
 
 - **v1.4.10** — 主程序检查改为 npm + GitHub 双源比对（不再稳定版优先）：
   - **主程序（`@deepseek-ai/dsh`）目前没有稳定版**（全是 rc）。旧 `pickNpmLatest` 优先稳定版、全预发布时回退 `dist-tags.latest`，导致发布在 `next` 通道的 rc（如 `latest=0.1.0-rc.7` 而 `next=0.1.0-rc.8`）被隐藏。主程序检查改用 `pickMainLatest()`——直接取已发布**最高版本（含预发布）**。

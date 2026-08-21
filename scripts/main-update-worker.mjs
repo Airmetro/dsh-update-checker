@@ -22,6 +22,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import https from "node:https";
 import { gunzipSync } from "node:zlib";
+// v1.4.11：node/npm-cli 解析统一走 lib 的 resolveNodeExe/getNpmCli（issue #8：
+// Electron 下 process.execPath 是 electron.exe，不能直接当 node 跑 npm）。
+import { resolveNodeExe, getNpmCli } from "../lib/index.js";
 
 const ROOT = process.env.DSH_UC_UPDATE_ROOT;
 const TARGET = process.env.DSH_UC_UPDATE_TARGET;
@@ -69,21 +72,12 @@ async function opsLog(entry) {
   }
 }
 
-// 定位 npm-cli.js（与 lib/index.js 的多布局逻辑一致）
-function resolveNpmCli() {
-  const exeDir = dirname(process.execPath);
-  const cands = [
-    join(exeDir, "node_modules", "npm", "bin", "npm-cli.js"),
-    join(exeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-    join(exeDir, "..", "node_modules", "npm", "bin", "npm-cli.js"),
-  ];
-  return cands.find((p) => existsSync(p)) || cands[0];
-}
-const NPM_CLI = resolveNpmCli();
+// 定位 npm-cli.js（复用 lib/index.js 的多布局逻辑；Electron 形态解析真实 node）
+const NPM_CLI = getNpmCli();
 
 function runNpm(args, { cwd, timeoutMs = 600000, onProgress } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [NPM_CLI, ...args], {
+    const child = spawn(resolveNodeExe(), [NPM_CLI, ...args], {
       cwd,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],

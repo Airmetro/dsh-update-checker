@@ -57,6 +57,8 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - **`$DSH_HOME`** — the parent of the `profiles` root (state, backups, restart log live there).
 - **Composition file** — defaults to `$DSH_HOME/profiles/web/cordis.patch.yml`.
 - **Deployment root** — junction `realpath` first, then `DSH_DEPLOY_ROOT`, then `process.cwd()`, then the **npm global prefix** (parent of `npm root -g`'s output; v1.4.9+ covers `npm -g` installs).
+  - systemd / `npm -g` escape hatch: if auto-detection ever misses your setup, set `DSH_DEPLOY_ROOT` to the directory that contains `node_modules/@deepseek-ai/dsh` (e.g. `<npm prefix>/lib` on Linux).
+- **Node / npm executables** — `resolveNodeExe()` finds the real Node: `DSH_UC_NODE_EXE` override → `npm_node_execpath` → `process.execPath` when it is Node → common install dirs → `PATH`. This is what makes DSH Desktop (Electron, where `process.execPath` is `electron.exe`) able to run npm for plugin updates. If your Desktop build bundles Node elsewhere, set `DSH_UC_NODE_EXE` to it.
 - **Restart launcher** — self-adapting: probes common launcher names under the deployment root; the web port is read from the running `webServer.port`.
 
 ## Platform & install-layout support
@@ -75,6 +77,14 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - Before `npm install`, a backup (deployment `package-lock.json` + both @deepseek-ai version manifests + `backup-meta.json`) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/`; both main-program and plugin rollback routes are provided.
 
 ## Changelog
+
+- **v1.4.11** — Fix "update completes instantly but the restart does nothing / still the old version", Electron (DSH Desktop) plugin updates, and banner UX:
+  - **Main-program update no longer restarts prematurely** ([#9](https://github.com/Airmetro/dsh-update-checker/issues/9) — reported by Airmetro): `/update` only *starts* the detached worker (stop service → install → verify → restart → health check). The client previously treated that HTTP 200 as "update done" and immediately called `/restart`, racing the worker's install (file locks → install fails → rollback → the service came back on the old version). Now the banner and the settings page poll `update-progress.json` until the worker reports `phase=done`/`error`, and only then show "update complete" and reload the page. The worker itself restarts the service, so no separate restart call is needed.
+  - **DSH Desktop (Electron) plugin updates fixed** ([#8](https://github.com/Airmetro/dsh-update-checker/issues/8)): all npm/pnpm subprocesses were spawned with `process.execPath`, which under Electron is `electron.exe` — npm never ran, producing `WSALookupServiceBegin…10108` / "npm install produced no package". New `resolveNodeExe()` finds the real Node (env override `DSH_UC_NODE_EXE` → `npm_node_execpath` → execPath-if-node → common install dirs → PATH), and `getNpmCli()` derives npm-cli.js from it. The main-update worker is also spawned with the real Node.
+  - **Banner shows only after both checks finish**: the main-program banner and the plugin banner now wait for *both* checks to complete before showing anything (no more two-stage popups). Plugin checks also run concurrently (were sequential).
+  - **Settings "Display & control" renders immediately**: the toggles and download-source select are rendered right away with defaults instead of waiting for `settings.json` (the whole controls box used to be empty until the network round-trip).
+  - `probeNpmGlobalRoot` caches failures for 60s instead of per-process (npm -g layout still covered).
+  - New pure function `buildNodeExeCandidates()` (unit-tested); test suite 110 pass.
 
 - **v1.4.10** — Main-program update hardened into a safe state machine (fixes the 2026-08-20 incident where an in-place `npm install` while the service was running corrupted `node_modules` and took the web UI down):
   - **D2 (critical)** — the update no longer runs `npm install` while the service is alive. `/update` now backs up, writes a worker script, and detaches it via a two-level spawn; the worker **stops the service first** (taskkill + port-release wait), installs, verifies, restarts, and health-checks — killing the old process can no longer corrupt the install.
