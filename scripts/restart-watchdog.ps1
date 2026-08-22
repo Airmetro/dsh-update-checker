@@ -34,11 +34,24 @@ $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Silentl
 if ($conn) {
   $pids = $conn | Select-Object -ExpandProperty OwningProcess -Unique
   foreach ($p in $pids) {
-    & 'C:\Windows\System32\taskkill.exe' /PID $p /F 2>&1 | Out-Null
+    & 'C:\Windows\System32\taskkill.exe' /PID $p /T /F 2>&1 | Out-Null
     W "killed port owner PID $p"
   }
 }
-Start-Sleep -Seconds 1
+
+$portFree = $false
+for ($i = 0; $i -lt 20; $i++) {
+  $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  if (-not $c) { $portFree = $true; break }
+  Start-Sleep -Milliseconds 500
+}
+if (-not $portFree) {
+  $err = 'port still listening after kill - refusing to relaunch'
+  W $err
+  Write-Result @{ startedAt = $started; port = $port; pid = $targetPid; recovered = $false; attempts = 0; error = $err }
+  exit 1
+}
+W 'port free'
 
 function Start-Reload {
   if ($nodeFile -and $nodeArgsJson) {
@@ -85,6 +98,19 @@ for ($round = 1; $round -le 3 -and -not $recovered; $round++) {
   }
   if (-not $recovered -and $round -lt 3) {
     W "watchdog retry $round"
+    $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($c) {
+      $pids = $c | Select-Object -ExpandProperty OwningProcess -Unique
+      foreach ($p in $pids) {
+        & 'C:\Windows\System32\taskkill.exe' /PID $p /T /F 2>&1 | Out-Null
+        W "retry: killed port owner PID $p"
+      }
+      for ($i = 0; $i -lt 20; $i++) {
+        $c2 = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        if (-not $c2) { break }
+        Start-Sleep -Milliseconds 500
+      }
+    }
     Start-Reload | Out-Null
   }
 }

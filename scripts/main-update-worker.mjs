@@ -243,8 +243,9 @@ async function stopService() {
 
 async function startService() {
   const port = 3080;
+  const bin = join(ROOT, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
   try {
-    spawn("C:\\Windows\\System32\\cmd.exe", ["/c", join(ROOT, "start-dsh.cmd")], {
+    spawn(resolveNodeExe(), [bin, "web"], {
       cwd: ROOT,
       windowsHide: true,
       detached: true,
@@ -657,6 +658,16 @@ async function main() {
     
     await writeProgress({ phase: "download", label: "正在下载新版本（服务不中断）…", percent: 4 });
     let npmReady = false;
+    const dryRunStartedAt = Date.now();
+    const dryRunTicker = setInterval(() => {
+      const waited = Math.round((Date.now() - dryRunStartedAt) / 1000);
+      writeProgress({
+        phase: "download",
+        label: "正在检查依赖树（npm dry-run）…",
+        percent: Math.min(8, 4 + Math.floor(waited / 30)),
+        detail: `已等待 ${waited}s`,
+      });
+    }, 5000);
     try {
       
       await runNpm([...baseArgs, "--dry-run"], { cwd: ROOT, timeoutMs: 150000 });
@@ -668,6 +679,8 @@ async function main() {
         error: truncate(String((err && err.message) || err), 500),
         code: err && err.code,
       });
+    } finally {
+      clearInterval(dryRunTicker);
     }
     if (!npmReady) {
       
