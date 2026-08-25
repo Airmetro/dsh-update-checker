@@ -8,7 +8,7 @@
 
 - **完整更新生命周期** — 检查、备份、更新、回滚、重启，一个插件全部完成。
 - **主程序检查** — 对比已安装的 `@deepseek-ai/dsh` 与 npm 最新版（全量 packument、稳定版优先、semver 感知——latest tag 指向 prerelease 也不会误报）。
-- **第三方插件检查** — 扫描已安装的非官方插件（布局无关，支持 pnpm hoisted 的多位置 `node_modules`），逐一与 npm/GitHub 双源对比（目标版本取较高者）；无发布源的本地工具归入 `ignored`。
+- **第三方插件检查** — 扫描已安装的非官方插件（布局无关，支持 pnpm hoisted 的多位置 `node_modules`），逐一与 npm/GitHub 双源对比（目标版本取较高者）；无发布源的本地工具归入 `ignored`。同名插件多位置时**优先组合所属 profile 的副本**（其余记为 `copies` 供区分），可**逐个"不再提醒"排除**（`excludedPlugins`，设置页可一键恢复）。
 - **GitHub 更新通道** — 对 GitHub 域使用专用 HTTPS 客户端（兼容本地自签名证书代理；npm registry 仍走严格校验），带重定向跟随、大小上限与超时；codeload tarball 解压前校验构建产物。
 - **界面内横幅** — 跟随 DSH 界面语言（zh/en），显示有更新 / 已是最新 / 失败三种状态，支持"不再提示"；更新横幅展示**变更说明 brief**（vX→vY + 风险等级，有 GitHub release 正文时附更新要点）。
 - **安全的一键更新** — 主程序：dry-run 守卫（计划内有 remove 即中止）→ 备份 → 布局自适应安装（原位或 `-g`）→ 安装后回读校验 `installed==latest`；插件：临时目录安装 + 拷贝、依赖版本核对、npm ≥ 12 自动补 `--allow-scripts` 构建原生依赖。**更新（与回滚）会持久化回 profile 的 `package.json` + 锁文件**（`pnpm install --lockfile-only` / `npm install --package-lock-only`），之后的 install 不会再把插件悄悄拉回旧版——不再出现「同一插件反复提醒更新」的死循环。
@@ -19,7 +19,7 @@
 
 ### Host 与 Client
 
-- **Host**（`lib/index.js`）— HTTP 路由：`status.json`（检查）、`suppress`、`update`（支持 `dry` 预览）、`rollback`、`backups.json`、`restart`、`restart-status.json`、`plugins.json`、`plugin-update`、`plugin-rollback`。
+- **Host**（`lib/index.js`）— HTTP 路由：`status.json`（检查）、`suppress`、`update`（支持 `dry` 预览）、`rollback`、`backups.json`、`restart`、`restart-status.json`、`plugins.json`、`plugin-update`、`plugin-rollback`、`plugin-exclude`。
 - **Client**（`lib/client.js`）— 在根级 `shell.overlay` 插槽渲染两个横幅：主程序横幅（更新状态）与插件横幅（可更新插件，支持单个 / 全部更新）。页面加载时各检查一次，之后每 6 小时复查；设置页「检查更新」另提供回滚按钮。
 
 ## 安装与装载
@@ -77,6 +77,10 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json`），主程序与插件都有对应回滚路由。
 
 ## 更新日志
+
+- **v1.4.16** — 单个插件排除 + 同名副本处理：
+  - **单个插件"不再提醒"**（issue #10）：插件横幅与设置页都是每个插件一个「不再提醒 / Don't remind」动作；被排除的插件进入「已排除的插件」列表，可一键恢复。持久化在 `dsh-update-checker-state.json` 的 `excludedPlugins`。
+  - **同名副本**：同名插件装在多个 `node_modules` 时，**优先组合所属 profile 的 `node_modules` 那份**（符合 Node 就近解析），其余记为 `copies`；每个插件也显示安装路径，让你能分辨检查的是哪一份。
 
 - **v1.4.14** — 下载优先的主程序更新（不再一点击就杀进程）、健康检查/校验器修复、跨进程更新锁、profiles 同步、全源码注释移除：
   - **下载优先流程**（用户要求）：点更新不再立即停服务——worker 先在服务运行中把东西**全部下载/预热到本地缓存**（npm `--dry-run` 预热，或 registry tarball 整树下载），下载完才停服做快速应用；网络耗时阶段页面保持可用。

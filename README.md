@@ -8,7 +8,7 @@ A permanent Cordis plugin for the [DeepSeek Harness](https://github.com/deepseek
 
 - **Full update lifecycle** — check, backup, update, **rollback**, and restart, all in one plugin.
 - **Main program check** — compares the installed `@deepseek-ai/dsh` against the npm latest (full packument, stable-first, semver-aware — a pre-release `latest` tag won't cause false positives).
-- **Third-party plugin check** — scans installed non-official plugins (layout-agnostic, incl. pnpm-hoisted `node_modules`), cross-compares each against **npm + GitHub** (target = higher version); local tools with no publish source go to `ignored`.
+- **Third-party plugin check** — scans installed non-official plugins (layout-agnostic, incl. pnpm-hoisted `node_modules`), cross-compares each against **npm + GitHub** (target = higher version); local tools with no publish source go to `ignored`. When a plugin name has multiple copies, the one in the **composition-owning profile's `node_modules`** wins (the rest are listed as `copies`), and each plugin can be excluded from prompts (`excludedPlugins`, re-enableable in the settings page).
 - **Working GitHub channel** — dedicated HTTPS client for GitHub domains (tolerates self-signed local proxies; the npm registry still uses strict TLS), with redirects, size caps and timeouts; codeload tarballs are validated before install.
 - **In-GUI banner** — locale-aware (zh/en follows the DSH UI language), states update / up-to-date / failure, with a suppression flag and a **change brief** (vX→vY + risk level + release notes when available).
 - **One-click update with safety** — main program: dry-run guard (abort if the plan contains `remove`) → backup → layout-adaptive install (in-place or `-g`) → post-install check `installed==latest`; plugins: temp-dir install + copy, dependency version reconciliation, auto `--allow-scripts` for native deps on npm ≥ 12. **Updates (and rollbacks) persist to the profile `package.json` + lockfile** (`pnpm install --lockfile-only` / `npm install --package-lock-only`), so a later install never silently reverts the plugin — no more "same plugin keeps asking for the same update" loops.
@@ -19,7 +19,7 @@ A permanent Cordis plugin for the [DeepSeek Harness](https://github.com/deepseek
 
 ### Host & Client
 
-- **Host** (`lib/index.js`) — HTTP routes: `status.json` (check), `suppress`, `update` (with `dry` preview), `rollback`, `backups.json`, `restart`, `restart-status.json`, `plugins.json`, `plugin-update`, `plugin-rollback`.
+- **Host** (`lib/index.js`) — HTTP routes: `status.json` (check), `suppress`, `update` (with `dry` preview), `rollback`, `backups.json`, `restart`, `restart-status.json`, `plugins.json`, `plugin-update`, `plugin-rollback`, `plugin-exclude`.
 - **Client** (`lib/client.js`) — renders two banners in the root `shell.overlay` slot: a core banner (main-program update state) and a plugin banner (updatable plugins with single / update-all buttons). Both check on page load, then every 6 hours; the settings page ("检查更新") adds rollback buttons.
 
 ## Install & mount
@@ -77,6 +77,10 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - Before `npm install`, a backup (deployment `package-lock.json` + both @deepseek-ai version manifests + `backup-meta.json`) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/`; both main-program and plugin rollback routes are provided.
 
 ## Changelog
+
+- **v1.4.16** — Per-plugin exclude + same-name copy handling:
+  - **Exclude a plugin from prompts** (issue #10): in the plugin banner and the settings page, each plugin has a "Don't remind / 不再提醒" action; excluded plugins move to an "Excluded plugins" list and can be re-enabled. Persisted in `dsh-update-checker-state.json` as `excludedPlugins`.
+  - **Same-name copies**: when a plugin name is installed in more than one `node_modules`, the copy in the composition-owning profile's `node_modules` wins (matches Node resolution), the remaining copies are recorded as `copies`; each plugin also shows its install path so you can tell which copy is being checked.
 
 - **v1.4.14** — Download-first main-program update (no more instant process kill), fixed health check, fixed dist/entry verification, cross-process update lock, profiles sync, all source comments removed:
   - **Download-first flow** (user request): clicking update no longer stops the service immediately. The worker now **downloads everything first while the service stays up** (npm `--dry-run` cache pre-warm, or registry tarball whole-tree download to a local cache), and only then stops the service for a fast extract/install — the page stays usable for the slow network part.
