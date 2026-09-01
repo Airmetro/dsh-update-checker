@@ -1,7 +1,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -72,4 +72,33 @@ test('clearAllBackups: 删除主程序与插件全部备份条目', async () => 
   
   assert.deepEqual(await readdir(dirs.main), ['plugins']);
   assert.equal((await readdir(dirs.plugins)).length, 0);
+});
+
+test('backupForUpdate: 写入 main-snapshot 整树快照与 package.json，供离线回滚', async () => {
+  const deployRoot = join(base, 'deploy');
+  const fw = join(deployRoot, 'node_modules', '@deepseek-ai');
+  await mkdir(join(fw, 'dsh'), { recursive: true });
+  await writeFile(join(fw, 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.0-rc.6' }), 'utf8');
+  await mkdir(join(fw, 'dsh-web-frontend'), { recursive: true });
+  await writeFile(join(fw, 'dsh-web-frontend', 'index.js'), 'ok', 'utf8');
+  await writeFile(join(deployRoot, 'package.json'), JSON.stringify({ dependencies: { '@deepseek-ai/dsh': '0.1.0-rc.6' } }), 'utf8');
+  await writeFile(join(deployRoot, 'package-lock.json'), JSON.stringify({ name: 'deploy' }), 'utf8');
+
+  const prevDeployRoot = process.env.DSH_DEPLOY_ROOT;
+  process.env.DSH_DEPLOY_ROOT = deployRoot;
+  try {
+    const dir = await mod.backupForUpdate(deployRoot);
+    const meta = JSON.parse(await readFile(join(dir, 'backup-meta.json'), 'utf8'));
+    assert.equal(meta.installed, '0.1.0-rc.6');
+    assert.equal(meta.snapshot, 'main-snapshot');
+    const dshPj = JSON.parse(await readFile(join(dir, 'main-snapshot', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'));
+    assert.equal(dshPj.version, '0.1.0-rc.6');
+    const fwList = await readdir(join(dir, 'main-snapshot', 'node_modules', '@deepseek-ai', 'dsh-web-frontend'));
+    assert.equal(fwList.includes('index.js'), true, '快照应含 非 dsh 的 @deepseek-ai 包');
+    const snapPkg = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'));
+    assert.equal(snapPkg.dependencies['@deepseek-ai/dsh'], '0.1.0-rc.6', 'package.json 应被快照');
+  } finally {
+    if (prevDeployRoot === undefined) delete process.env.DSH_DEPLOY_ROOT;
+    else process.env.DSH_DEPLOY_ROOT = prevDeployRoot;
+  }
 });

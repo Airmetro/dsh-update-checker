@@ -14,6 +14,11 @@ test('isGhFallbackable: 既有三码保持 → true', () => {
   }
 });
 
+test('isGhFallbackable: 根 package.json 缺失（ENOENT）→ true，回退 npm', () => {
+  assert.equal(isGhFallbackable(Object.assign(new Error('no such file'), { code: 'ENOENT' })), true);
+  assert.equal(isGhFallbackable(Object.assign(new Error('no root package'), { code: 'ENOPKG' })), true);
+});
+
 test('isGhFallbackable: 无 code / 其它 code / null / undefined → false', () => {
   assert.equal(isGhFallbackable(new Error('GitHub download HTTP 502')), false); 
   assert.equal(isGhFallbackable(Object.assign(new Error('x'), { code: 'ECONNRESET' })), false);

@@ -85,3 +85,9 @@ test('parseGhRepo: .git 后缀被剥除（含带尾随路径）', () => {
   assert.equal(parseGhRepo('a/b.git'), 'a/b');
   assert.equal(parseGhRepo('https://github.com/a/b.git/tree/main'), 'a/b');
 });
+
+test('parseGhRepo: monorepo 子包（repository.directory 存在）→ null，降级为 npm-only', () => {
+  assert.equal(parseGhRepo({ url: 'https://github.com/Tencent/WeKnora.git', directory: 'packages/dsh-weknora' }), null);
+  assert.equal(parseGhRepo({ url: 'git+https://github.com/t/a.git', directory: 'packages/c' }), null);
+  assert.equal(parseGhRepo({ url: 'https://github.com/a/b' }), 'a/b');
+});

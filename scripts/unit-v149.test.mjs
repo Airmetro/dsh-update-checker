@@ -44,7 +44,7 @@ test('pickTargetSource: 双 null → 全空', () => {
 });
 
 
-test('pickMainLatest: 无稳定版时取最高版本（含预发布，next 通道 rc 也计入）', () => {
+test('pickMainLatest: 默认（无 allowPre）跳过预发布，无稳定版时返回 null（安全）', () => {
   const doc = {
     'dist-tags': { latest: '0.1.0-rc.7', next: '0.1.0-rc.8' },
     versions: {
@@ -53,16 +53,26 @@ test('pickMainLatest: 无稳定版时取最高版本（含预发布，next 通�
       '0.1.0-rc.8': {},
     },
   };
-  
-  assert.equal(pickMainLatest(doc), '0.1.0-rc.8');
+  assert.equal(pickMainLatest(doc), null);
+  assert.equal(pickMainLatest(doc, true), '0.1.0-rc.8');
 });
 
-test('pickMainLatest: 有稳定版时仍取最高版本（含 rc 比较规则）', () => {
+test('pickMainLatest: 默认优先最高稳定版，不落到预发布', () => {
   const doc = {
     'dist-tags': { latest: '1.0.0' },
-    versions: { '1.0.0': {}, '1.1.0-rc.1': {}, '0.9.9': {} },
+    versions: { '1.0.0': {}, '1.1.0-rc.1': {}, '0.9.9': {}, '1.0.2': {} },
   };
-  assert.equal(pickMainLatest(doc), '1.1.0-rc.1'); 
+  assert.equal(pickMainLatest(doc), '1.0.2');
+  assert.equal(pickMainLatest(doc, true), '1.1.0-rc.1');
+});
+
+test('pickMainLatest: 事故场景（最高版为 alpha，默认不选它）', () => {
+  const doc = {
+    'dist-tags': { latest: '0.1.0' },
+    versions: { '0.1.0': {}, '0.1.1': {}, '0.1.2-alpha.3': {} },
+  };
+  assert.equal(pickMainLatest(doc), '0.1.1');
+  assert.equal(pickMainLatest(doc, true), '0.1.2-alpha.3');
 });
 
 test('pickMainLatest: 空 packument → null', () => {
@@ -71,9 +81,10 @@ test('pickMainLatest: 空 packument → null', () => {
   assert.equal(pickMainLatest({ versions: {} }), null);
 });
 
-test('pickMainLatest: 排序与 rc 序号（rc.10 > rc.9）', () => {
+test('pickMainLatest: allowPre 时排序含 rc 序号（rc.10 > rc.9）', () => {
   const doc = { versions: { '0.1.0-rc.9': {}, '0.1.0-rc.10': {}, '0.1.0-rc.2': {} } };
-  assert.equal(pickMainLatest(doc), '0.1.0-rc.10');
+  assert.equal(pickMainLatest(doc, true), '0.1.0-rc.10');
+  assert.equal(pickMainLatest(doc), null);
 });
 
 

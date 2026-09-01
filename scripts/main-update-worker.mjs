@@ -406,9 +406,34 @@ async function healthCheck() {
 
 
 async function rollbackFromBackup() {
+  const restoreFromSnapshot = async () => {
+    const nmSrc = join(BACKUP, "main-snapshot", "node_modules", "@deepseek-ai");
+    if (!(await exists(nmSrc))) return { ok: false, error: "no snapshot" };
+    if (await exists(join(ROOT, "node_modules", "@deepseek-ai"))) {
+      await rm(join(ROOT, "node_modules", "@deepseek-ai"), { recursive: true, force: true });
+    }
+    await mkdir(join(ROOT, "node_modules"), { recursive: true });
+    await cp(nmSrc, join(ROOT, "node_modules", "@deepseek-ai"), { recursive: true });
+    const meta = await readJson(join(BACKUP, "backup-meta.json"));
+    const installed = await readInstalledVersion();
+    if (installed && meta && compareVersions(installed, meta.installed) !== 0) {
+      return { ok: false, error: `snapshot mismatch (${installed} != ${meta.installed})` };
+    }
+    const pjPath = join(ROOT, "package.json");
+    try {
+      const pj = JSON.parse(await readFile(pjPath, "utf8"));
+      if (pj.dependencies && typeof pj.dependencies[PACKAGE] === "string" && meta && meta.installed) {
+        pj.dependencies[PACKAGE] = meta.installed;
+        await writeFile(pjPath, JSON.stringify(pj, null, 2), "utf8");
+      }
+    } catch {  }
+    return { ok: true, installed, restored: "snapshot" };
+  };
   try {
     const meta = await readJson(join(BACKUP, "backup-meta.json"));
     if (!meta || !meta.installed) return { ok: false, error: "backup missing installed version" };
+    const snap = await restoreFromSnapshot();
+    if (snap.ok) return snap;
     const spec = `${PACKAGE}@${meta.installed}`;
     const type = deployType(ROOT);
     const args = ["install"];
