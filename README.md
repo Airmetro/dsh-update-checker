@@ -78,6 +78,11 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 ## Changelog
 
+- **v1.4.19** — Follow pre-release builds when no stable release exists + clear npx-cache-layout warning (issue #14):
+  - **No-stable fallback**: `pickMainLatest` now returns the highest published version (including pre-releases) when there are no stable `@deepseek-ai/dsh` releases, instead of returning `null` and failing the status check with "no stable version; enable allowPrerelease". The main framework currently ships only `rc`/`alpha` builds, so the stable-only default made the checker pointless.
+  - **Stable-first kept when a stable exists**: if any stable release is present, the checker still prefers the highest stable and only follows pre-releases when `allowPrerelease` is on (preserving the v1.4.17 incident guard).
+  - **npx-cache-layout warning** (#14): when the resolved deploy root is an npm `npx` cache path (`.../_npx/...`), the status check reports a clear note and the main-framework update route refuses with `E_NPX_CACHE`, pointing to the official local install or `npm i -g @deepseek-ai/dsh`, instead of silently installing to the wrong place and failing the post-install integrity check.
+
 - **v1.4.18** — Monorepo-subpackage false updates (#13) + dark-mode primary-button contrast (#11, from PR #12):
   - **Monorepo subpackage detection** (#13): `parseGhRepo` returns `null` when the npm `repository` carries `directory` (e.g. `packages/dsh-weknora`), so a monorepo subpackage is checked against npm only. Previously the repo root's latest release tag (e.g. `v0.7.2`) was treated as the update target and the update then failed on the missing root `package.json` (`ENOENT`).
   - **Fail-safe GitHub provenance** (#13): `fetchGhPkgName` now distinguishes "confirmed the repo root has no `package.json`" (HTTP 404 → `hasRootPkg:false`, treated as not belonging) from a transient/unknown error (`hasRootPkg:null`, still trusted), so a real repo isn't wrongly suppressed by a network blip.

@@ -78,6 +78,11 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.4.19** — 无稳定版时跟随预发布 + npx 缓存布局提示（#14）：
+  - **无稳定版回退**：`pickMainLatest` 在没有任何稳定版时改为返回已发布最高版本（含预发布），不再返回 `null` 导致检查报「无稳定版；请开启 allowPrerelease」。目前主框架只有 `rc`/`alpha`，默认只跟稳定版的旧策略会让插件形同虚设。
+  - **有稳定版仍稳定优先**：只要存在任一稳定版，仍优先最高稳定版、仅在开启 `allowPrerelease` 时才跟进预发布（保留 v1.4.17 的事故防护）。
+  - **npx 缓存布局提示**（#14）：检测到部署根是 npm 的 `npx` 缓存路径（`.../_npx/...`）时，状态检查给出明确说明，主框架更新路由以 `E_NPX_CACHE` 拒绝并提示改用官方本地部署或 `npm i -g @deepseek-ai/dsh`，不再装到错误位置后于完整性校验才失败。
+
 - **v1.4.18** — 修复 monorepo 子包误报更新（#13）+ 深色模式主按钮对比度（#11，采用 PR #12）：
   - **monorepo 子包识别**（#13）：`parseGhRepo` 在 npm `repository` 带 `directory`（如 `packages/dsh-weknora`）时返回 `null`，子包只按 npm 检查。此前把仓库根的最新 release tag（如 `v0.7.2`）当成更新目标，点更新后因根目录无 `package.json` 报 `ENOENT`。
   - **GitHub 归属 fail-safe**（#13）：`fetchGhPkgName` 区分「确认根目录无 `package.json`」（HTTP 404 → `hasRootPkg:false`，判为不属于）与「瞬时/未知错误」（`hasRootPkg:null`，仍采信），避免误伤真实仓库。

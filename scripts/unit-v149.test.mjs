@@ -4,7 +4,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pickTargetSource, pickMainLatest, mainTagToVersion } from '../lib/index.js';
+import { pickTargetSource, pickMainLatest, mainTagToVersion, isNpxCacheRoot } from '../lib/index.js';
 
 
 test('pickTargetSource: 非平局按版本较高者（github 高）', () => {
@@ -44,7 +44,7 @@ test('pickTargetSource: 双 null → 全空', () => {
 });
 
 
-test('pickMainLatest: 默认（无 allowPre）跳过预发布，无稳定版时返回 null（安全）', () => {
+test('pickMainLatest: 默认（无 allowPre）跳过预发布，无稳定版时回退最高预发布（修复 no-stable 报错）', () => {
   const doc = {
     'dist-tags': { latest: '0.1.0-rc.7', next: '0.1.0-rc.8' },
     versions: {
@@ -53,7 +53,7 @@ test('pickMainLatest: 默认（无 allowPre）跳过预发布，无稳定版时�
       '0.1.0-rc.8': {},
     },
   };
-  assert.equal(pickMainLatest(doc), null);
+  assert.equal(pickMainLatest(doc), '0.1.0-rc.8');
   assert.equal(pickMainLatest(doc, true), '0.1.0-rc.8');
 });
 
@@ -81,10 +81,10 @@ test('pickMainLatest: 空 packument → null', () => {
   assert.equal(pickMainLatest({ versions: {} }), null);
 });
 
-test('pickMainLatest: allowPre 时排序含 rc 序号（rc.10 > rc.9）', () => {
+test('pickMainLatest: 无稳定版默认回退最高预发布（含 rc 序号，rc.10 > rc.9）', () => {
   const doc = { versions: { '0.1.0-rc.9': {}, '0.1.0-rc.10': {}, '0.1.0-rc.2': {} } };
   assert.equal(pickMainLatest(doc, true), '0.1.0-rc.10');
-  assert.equal(pickMainLatest(doc), null);
+  assert.equal(pickMainLatest(doc), '0.1.0-rc.10');
 });
 
 
@@ -102,4 +102,18 @@ test('mainTagToVersion: 非 semver → null', () => {
   assert.equal(mainTagToVersion('dsh-latest'), null);
   assert.equal(mainTagToVersion(''), null);
   assert.equal(mainTagToVersion('release-2026'), null);
+});
+
+test('isNpxCacheRoot: 识别 npm npx 缓存路径（issue #14）', () => {
+  assert.equal(isNpxCacheRoot('C:\\Users\\x\\AppData\\Local\\npm-cache\\_npx\\abc123\\node_modules'), true);
+  assert.equal(isNpxCacheRoot('C:/Users/x/AppData/Local/npm-cache/_npx/abc123'), true);
+  assert.equal(isNpxCacheRoot('_npx\\abc'), true);
+  assert.equal(isNpxCacheRoot('c:/x/_npx'), true);
+});
+
+test('isNpxCacheRoot: 非 npx 路径不误判', () => {
+  assert.equal(isNpxCacheRoot('C:\\Users\\x\\DeepSeek-Harness\\node_modules\\@deepseek-ai\\dsh'), false);
+  assert.equal(isNpxCacheRoot('D:\\app\\DeepSeek-Harness'), false);
+  assert.equal(isNpxCacheRoot(null), false);
+  assert.equal(isNpxCacheRoot(''), false);
 });
