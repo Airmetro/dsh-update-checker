@@ -177,6 +177,16 @@ async function readInstalledVersion() {
   }
 }
 
+async function readLockedDshVersion() {
+  try {
+    const lock = await readJson(join(ROOT, "package-lock.json"));
+    const p = lock && lock.packages && lock.packages["node_modules/@deepseek-ai/dsh"];
+    return p && typeof p.version === "string" && p.version ? p.version : null;
+  } catch {
+    return null;
+  }
+}
+
 function compareVersions(a, b) {
   const parse = (v) => {
     const m = String(v || "").trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
@@ -310,8 +320,14 @@ async function verifyTree() {
     if (pj.version !== TARGET) problems.push(`${n} ${pj.version} != ${TARGET}`);
   }
   const dist = join(nm, "dsh-web-frontend", "dist");
+  let distBase = dist;
   try {
-    const indexHtml = await readFile(join(dist, "index.html"), "utf8");
+    const rp = await realpath(join(nm, "dsh-web-frontend"));
+    if (rp && (await exists(join(rp, "dist")))) distBase = join(rp, "dist");
+  } catch {
+  }
+  try {
+    const indexHtml = await readFile(join(distBase, "index.html"), "utf8");
     const refs = [...indexHtml.matchAll(/["'](\/assets\/[^"']+)["']/g)].map((m) => m[1]);
     const present = new Set();
     const walk = async (dir) => {
@@ -320,13 +336,13 @@ async function verifyTree() {
         const full = join(dir, e.name);
         if (e.isDirectory()) await walk(full);
         else {
-          let rel = full.slice(dist.length).replace(/\\/g, "/");
+          let rel = full.slice(distBase.length).replace(/\\/g, "/");
           if (!rel.startsWith("/")) rel = "/" + rel;
           present.add(rel);
         }
       }
     };
-    await walk(dist);
+    await walk(distBase);
     for (const ref of refs) {
       if (!present.has(ref)) problems.push(`dist missing asset: ${ref}`);
     }
@@ -334,7 +350,7 @@ async function verifyTree() {
       problems.push("dsh-web-frontend package.json missing");
     }
   } catch {
-    problems.push("dsh-web-frontend dist/index.html unreadable");
+    problems.push(`dsh-web-frontend dist/index.html unreadable (tried: ${distBase})`);
   }
   
   
@@ -748,6 +764,13 @@ async function main() {
     let output = "";
     if (installVia === "npm") {
       await writeProgress({ phase: "install", label: "正在安装新版本…", percent: 70 });
+      const physVer = await readInstalledVersion();
+      const lockedVer = await readLockedDshVersion();
+      if (physVer && lockedVer && lockedVer !== physVer && physVer !== TARGET) {
+        await opsLog({ op: "main-stale-lockfile-reset", physical: physVer, locked: lockedVer, target: TARGET });
+        await rm(join(ROOT, "package-lock.json"), { force: true }).catch(() => {});
+        await rm(join(ROOT, "node_modules", ".package-lock.json"), { force: true }).catch(() => {});
+      }
       try {
         const total = 587;
         const { stdout, stderr } = await runNpm(baseArgs, { cwd: ROOT, timeoutMs: 600000, onProgress: (p) => {
