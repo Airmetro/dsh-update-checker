@@ -26,7 +26,7 @@ import https from "node:https";
 import { gunzipSync } from "node:zlib";
 
 
-import { resolveNodeExe, getNpmCli } from "../lib/index.js";
+import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock } from "../lib/index.js";
 
 const ROOT = process.env.DSH_UC_UPDATE_ROOT;
 const TARGET = process.env.DSH_UC_UPDATE_TARGET;
@@ -178,13 +178,25 @@ async function readInstalledVersion() {
 }
 
 async function readLockedDshVersion() {
-  try {
-    const lock = await readJson(join(ROOT, "package-lock.json"));
-    const p = lock && lock.packages && lock.packages["node_modules/@deepseek-ai/dsh"];
-    return p && typeof p.version === "string" && p.version ? p.version : null;
-  } catch {
-    return null;
+  for (const p of [join(ROOT, "package-lock.json"), join(ROOT, "node_modules", ".package-lock.json")]) {
+    const lock = await readJson(p);
+    const locked = lock && lock.packages && lock.packages["node_modules/@deepseek-ai/dsh"];
+    const v = locked && typeof locked.version === "string" && locked.version ? locked.version : null;
+    if (v) return v;
   }
+  return null;
+}
+
+export async function resetStaleLockfilesIfNeeded(target) {
+  const physVer = await readInstalledVersion();
+  const lockedVer = await readLockedDshVersion();
+  if (shouldResetStaleLock(physVer, lockedVer, target)) {
+    await opsLog({ op: "main-stale-lockfile-reset", physical: physVer, locked: lockedVer, target });
+    await rm(join(ROOT, "package-lock.json"), { force: true }).catch(() => {});
+    await rm(join(ROOT, "node_modules", ".package-lock.json"), { force: true }).catch(() => {});
+    return { reset: true, physical: physVer, locked: lockedVer };
+  }
+  return { reset: false, physical: physVer, locked: lockedVer };
 }
 
 function compareVersions(a, b) {
@@ -217,37 +229,60 @@ function compareVersions(a, b) {
 }
 
 
-async function stopService() {
-  const port = 3080;
+const PORT = Number(process.env.DSH_UC_UPDATE_PORT) || 3080;
+
+function portPids() {
   const ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
   const cmd =
-    `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | ` +
+    `Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue | ` +
     `Select-Object -ExpandProperty OwningProcess -Unique`;
-  const probe = () =>
-    new Promise((resolve) => {
-      const c = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", cmd], { windowsHide: true });
-      let o = "";
-      c.stdout.on("data", (d) => (o += d.toString()));
-      c.on("error", () => resolve([]));
-      c.on("close", () =>
-        resolve(o.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0))
-      );
-    });
-  const pids = await probe();
+  return new Promise((resolve) => {
+    const c = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", cmd], { windowsHide: true });
+    let o = "";
+    c.stdout.on("data", (d) => (o += d.toString()));
+    c.on("error", () => resolve([]));
+    c.on("close", () =>
+      resolve(o.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0))
+    );
+  });
+}
+
+async function killPidsOnPort() {
+  const pids = await portPids();
   for (const pid of pids) {
     if (pid === process.pid) continue;
     try {
       spawn("C:\\Windows\\System32\\taskkill.exe", ["/PID", String(pid), "/F"], { windowsHide: true, stdio: "ignore" });
     } catch {  }
   }
-  const deadline = Date.now() + 20000;
-  let still = true;
+}
+
+async function portOccupied() {
+  return (await portPids()).length > 0;
+}
+
+async function ensureServiceStopped(maxMs = 30000) {
+  const deadline = Date.now() + maxMs;
+  await killPidsOnPort();
   while (Date.now() < deadline) {
-    still = (await probe()).length > 0;
-    if (!still) break;
+    if ((await portPids()).length === 0) return { ok: true };
+    await killPidsOnPort();
     await new Promise((r) => setTimeout(r, 500));
   }
-  return { ok: !still, error: still ? `port ${port} still listening` : null };
+  return { ok: false, error: `port ${PORT} still listening after ${maxMs}ms` };
+}
+
+async function stopService() {
+  const deadline = Date.now() + 20000;
+  await killPidsOnPort();
+  let still = true;
+  while (Date.now() < deadline) {
+    still = (await portPids()).length > 0;
+    if (!still) break;
+    await killPidsOnPort();
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return { ok: !still, error: still ? `port ${PORT} still listening` : null };
 }
 
 
@@ -291,14 +326,15 @@ async function startService() {
 
 async function verifyTree() {
   const problems = [];
-  const nm = join(ROOT, "node_modules", "@deepseek-ai");
-  let names = [];
+  let packages = [];
   try {
-    names = (await readdir(nm, { withFileTypes: true }))
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name);
+    packages = await listDshPackageDirs(ROOT);
   } catch {
     problems.push(`@deepseek-ai dir missing`);
+    return { ok: false, problems };
+  }
+  if (packages.length === 0) {
+    problems.push(`@deepseek-ai dir missing: ${join(ROOT, "node_modules", "@deepseek-ai")}`);
     return { ok: false, problems };
   }
   const skippedPkgs = new Set();
@@ -312,53 +348,52 @@ async function verifyTree() {
   } catch {
     
   }
-  for (const n of names) {
-    if (!n.startsWith("dsh-")) continue;
-    if (skippedPkgs.has(n)) continue; 
-    const pj = await readJson(join(nm, n, "package.json"));
-    if (!pj) { problems.push(`${n} package.json missing`); continue; }
-    if (pj.version !== TARGET) problems.push(`${n} ${pj.version} != ${TARGET}`);
+  for (const p of packages) {
+    if (!p.name.startsWith("dsh-")) continue;
+    if (skippedPkgs.has(p.name)) continue; 
+    const pj = await readJson(join(p.dir, "package.json"));
+    if (!pj) { problems.push(`${p.name} package.json missing`); continue; }
+    if (pj.version !== TARGET) problems.push(`${p.name} ${pj.version} != ${TARGET}`);
   }
-  const dist = join(nm, "dsh-web-frontend", "dist");
-  let distBase = dist;
-  try {
-    const rp = await realpath(join(nm, "dsh-web-frontend"));
-    if (rp && (await exists(join(rp, "dist")))) distBase = join(rp, "dist");
-  } catch {
-  }
-  try {
-    const indexHtml = await readFile(join(distBase, "index.html"), "utf8");
-    const refs = [...indexHtml.matchAll(/["'](\/assets\/[^"']+)["']/g)].map((m) => m[1]);
-    const present = new Set();
-    const walk = async (dir) => {
-      const ents = await readdir(dir, { withFileTypes: true }).catch(() => []);
-      for (const e of ents) {
-        const full = join(dir, e.name);
-        if (e.isDirectory()) await walk(full);
-        else {
-          let rel = full.slice(distBase.length).replace(/\\/g, "/");
-          if (!rel.startsWith("/")) rel = "/" + rel;
-          present.add(rel);
+  const fwDir = await findDshPackageDir(ROOT, "dsh-web-frontend");
+  if (!fwDir) {
+    problems.push("dsh-web-frontend not found (top-level or nested)");
+  } else {
+    let distBase = join(fwDir, "dist");
+    try {
+      const indexHtml = await readFile(join(distBase, "index.html"), "utf8");
+      const refs = [...indexHtml.matchAll(/["'](\/assets\/[^"']+)["']/g)].map((m) => m[1]);
+      const present = new Set();
+      const walk = async (dir) => {
+        const ents = await readdir(dir, { withFileTypes: true }).catch(() => []);
+        for (const e of ents) {
+          const full = join(dir, e.name);
+          if (e.isDirectory()) await walk(full);
+          else {
+            let rel = full.slice(distBase.length).replace(/\\/g, "/");
+            if (!rel.startsWith("/")) rel = "/" + rel;
+            present.add(rel);
+          }
         }
+      };
+      await walk(distBase);
+      for (const ref of refs) {
+        if (!present.has(ref)) problems.push(`dist missing asset: ${ref}`);
       }
-    };
-    await walk(distBase);
-    for (const ref of refs) {
-      if (!present.has(ref)) problems.push(`dist missing asset: ${ref}`);
+      if (!(await exists(join(fwDir, "package.json")))) {
+        problems.push("dsh-web-frontend package.json missing");
+      }
+    } catch {
+      problems.push(`dsh-web-frontend dist/index.html unreadable (tried: ${distBase})`);
     }
-    if (!(await exists(join(nm, "dsh-web-frontend", "package.json")))) {
-      problems.push("dsh-web-frontend package.json missing");
-    }
-  } catch {
-    problems.push(`dsh-web-frontend dist/index.html unreadable (tried: ${distBase})`);
   }
   
   
   
   const ENTRY_NAMES = ["client.js", "index.js", "index.cjs", "index.mjs", "bin.js", "main.js", "server.js"];
-  for (const n of names) {
-    if (skippedPkgs.has(n)) continue; 
-    const pkgDir = join(nm, n);
+  for (const p of packages) {
+    if (skippedPkgs.has(p.name)) continue; 
+    const pkgDir = p.dir;
     if (!(await exists(join(pkgDir, "lib")))) continue;
     let entry = false;
     for (const en of ENTRY_NAMES) {
@@ -369,7 +404,7 @@ async function verifyTree() {
         if (await exists(join(pkgDir, en))) { entry = true; break; }
       }
     }
-    if (!entry) problems.push(`${n} empty shell (no lib entry file)`);
+    if (!entry) problems.push(`${p.name} empty shell (no lib entry file)`);
   }
   return { ok: problems.length === 0, problems };
 }
@@ -764,16 +799,10 @@ async function main() {
     let output = "";
     if (installVia === "npm") {
       await writeProgress({ phase: "install", label: "正在安装新版本…", percent: 70 });
-      const physVer = await readInstalledVersion();
-      const lockedVer = await readLockedDshVersion();
-      if (physVer && lockedVer && lockedVer !== physVer && physVer !== TARGET) {
-        await opsLog({ op: "main-stale-lockfile-reset", physical: physVer, locked: lockedVer, target: TARGET });
-        await rm(join(ROOT, "package-lock.json"), { force: true }).catch(() => {});
-        await rm(join(ROOT, "node_modules", ".package-lock.json"), { force: true }).catch(() => {});
-      }
-      try {
-        const total = 587;
-        const { stdout, stderr } = await runNpm(baseArgs, { cwd: ROOT, timeoutMs: 600000, onProgress: (p) => {
+      await resetStaleLockfilesIfNeeded(TARGET);
+      const installRes = await installWithFileLockRetry(
+        () => runNpm(baseArgs, { cwd: ROOT, timeoutMs: 600000, onProgress: (p) => {
+          const total = 587;
           const percent = Math.min(80, 70 + Math.round((p.httpCount / total) * 10));
           writeProgress({
             phase: "install",
@@ -782,19 +811,36 @@ async function main() {
             detail: p.httpCount ? `已解析 ${p.httpCount}/${total} 个包` : "npm 安装中…",
             count: { done: p.httpCount, total },
           });
-        } });
-        output = truncate((stdout || "") + (stderr || ""), 3000);
-      } catch (err) {
-        
+        } }),
+        {
+          keepStopped: () => ensureServiceStopped(15000),
+          isPortLocked: () => portOccupied().catch(() => false),
+          onRetry: async ({ attempt, locked, reoccupied, error }) => {
+            await opsLog({ op: "main-npm-install-retry", attempt, locked, reoccupied, error: truncate(error, 300) });
+            await writeProgress({
+              phase: "install",
+              label: "检测到服务被拉起/文件占用，正在清理后重试…",
+              percent: 76,
+              detail: `第 ${attempt}/${3} 次重试`,
+            });
+          },
+        }
+      );
+      if (!installRes.ok) {
+        const installErr = installRes.error;
         const rollback = await rollbackFromBackup();
         return await fail(
-          `install failed (${(err && err.code) || "unknown"}): ${err && err.message ? err.message : err}` +
+          `install failed (${(installErr && installErr.code) || "unknown"}): ${installErr && installErr.message ? installErr.message : installErr}` +
             (rollback.ok ? " — restored from backup" : " — ROLLBACK ALSO FAILED"),
-          (err && err.code) || "E_INSTALL",
-          { stderr: err && err.stderr ? truncate(err.stderr, 2000) : null, rollbackOk: rollback.ok }
+          (installErr && installErr.code) || "E_INSTALL",
+          { stderr: installErr && installErr.stderr ? truncate(installErr.stderr, 2000) : null, rollbackOk: rollback.ok }
         );
       }
+      const npmOut = installRes.result || {};
+      output = truncate((npmOut.stdout || "") + (npmOut.stderr || ""), 3000);
     } else {
+      const guard = await ensureServiceStopped(15000);
+      if (!guard.ok) return await fail(`service could not be kept stopped: ${guard.error}`, "E_STOP");
       await writeProgress({ phase: "install", label: "正在应用新版本…", percent: 72 });
       const ex = await extractTreeFromCache(cacheDir, (p) => {
         const percent = Math.min(82, 70 + Math.round((p.current / Math.max(1, p.total)) * 12));
@@ -874,12 +920,16 @@ async function main() {
   }
 }
 
-main()
-  .then((r) => {
-    console.log("worker result:", JSON.stringify(r));
-    process.exit(r && r.ok ? 0 : 1);
-  })
-  .catch((e) => {
-    console.error("worker fatal:", e);
-    process.exit(1);
-  });
+if (!process.env.DSH_UC_UPDATE_NO_RUN) {
+  main()
+    .then((r) => {
+      console.log("worker result:", JSON.stringify(r));
+      process.exit(r && r.ok ? 0 : 1);
+    })
+    .catch((e) => {
+      console.error("worker fatal:", e);
+      process.exit(1);
+    });
+}
+
+export { verifyTree, ensureServiceStopped, killPidsOnPort, portOccupied, portPids, startService };
