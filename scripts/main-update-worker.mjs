@@ -48,13 +48,71 @@ const truncate = (s, n) => {
 };
 
 let progressCache = null;
+let progressFrozen = false;
+
 async function writeProgress(patch) {
   try {
-    progressCache = { at: Date.now(), running: true, ...(progressCache || {}), ...patch };
+    progressCache = { running: true, workerPid: process.pid, ...(progressCache || {}), ...patch, at: Date.now() };
     await writeFile(PROGRESS_FILE, JSON.stringify(progressCache, null, 2), "utf8");
   } catch {
     
   }
+}
+
+function phaseCreepPercent(start, end, elapsedMs, halfLifeMs) {
+  if (!(end > start)) return end;
+  const half = Math.max(1, halfLifeMs);
+  const ratio = 1 - Math.exp(-Math.max(0, elapsedMs) / half);
+  return Math.min(end, Math.max(start, start + (end - start) * ratio));
+}
+
+function startProgressTicker(start, end, halfLifeMs, buildPatch, intervalMs = 1000) {
+  const startedAt = Date.now();
+  let floor = start;
+  let stopped = false;
+  let inFlight = Promise.resolve();
+  const tick = () => {
+    if (stopped || progressFrozen) return;
+    const elapsed = Date.now() - startedAt;
+    const pct = Math.max(floor, Math.round(phaseCreepPercent(start, end, elapsed, halfLifeMs)));
+    floor = pct;
+    inFlight = writeProgress(buildPatch(pct, Math.round(elapsed / 1000))).catch(() => {});
+  };
+  tick();
+  const timer = setInterval(tick, intervalMs);
+  return {
+    setFloor(value) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > floor) floor = Math.min(end, n);
+    },
+    elapsedSec() {
+      return Math.round((Date.now() - startedAt) / 1000);
+    },
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      try {
+        await inFlight;
+      } catch {
+        
+      }
+    },
+  };
+}
+
+async function countLockPackages(root) {
+  for (const p of [join(root, "package-lock.json"), join(root, "node_modules", ".package-lock.json")]) {
+    try {
+      const lk = JSON.parse(await readFile(p, "utf8"));
+      const n = lk && lk.packages
+        ? Object.keys(lk.packages).filter((k) => k.startsWith("node_modules/")).length
+        : 0;
+      if (n > 0) return n;
+    } catch {
+      
+    }
+  }
+  return null;
 }
 async function clearProgress() {
   progressCache = null;
@@ -252,13 +310,29 @@ async function killPidsOnPort() {
   for (const pid of pids) {
     if (pid === process.pid) continue;
     try {
-      spawn("C:\\Windows\\System32\\taskkill.exe", ["/PID", String(pid), "/F"], { windowsHide: true, stdio: "ignore" });
+      const c = spawn("C:\\Windows\\System32\\taskkill.exe", ["/PID", String(pid), "/F"], { windowsHide: true, stdio: "ignore" });
+      c.on("error", () => {});
     } catch {  }
   }
 }
 
 async function portOccupied() {
   return (await portPids()).length > 0;
+}
+
+const RESTART_EXTRA_WINDOW_MS = Number(process.env.DSH_UC_RESTART_WINDOW_MS) || 150000;
+
+const RESTART_MAX_SPAWNS = 3;
+
+async function waitPortQuiet(maxMs, onTick) {
+  const deadline = Date.now() + maxMs;
+  let occupied = (await portPids()).length > 0;
+  while (Date.now() < deadline && !occupied) {
+    if (onTick) await onTick();
+    await sleep(1000);
+    occupied = (await portPids()).length > 0;
+  }
+  return occupied;
 }
 
 async function ensureServiceStopped(maxMs = 30000) {
@@ -287,18 +361,24 @@ async function stopService() {
 
 
 async function startService() {
-  const port = 3080;
+  const port = PORT;
   const bin = join(ROOT, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+  let spawnError = null;
   try {
-    spawn(resolveNodeExe(), [bin, "web"], {
+    const child = spawn(resolveNodeExe(), [bin, "web"], {
       cwd: ROOT,
       windowsHide: true,
       detached: true,
       stdio: "ignore",
-    }).unref();
+    });
+    child.on("error", (err) => {
+      spawnError = err;
+    });
+    child.unref();
   } catch (err) {
     return { ok: false, error: `launcher spawn failed: ${err.message}` };
   }
+  if (spawnError) return { ok: false, error: `launcher spawn failed: ${spawnError.message}` };
   const ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
   const cmd = `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`;
   const probe = () =>
@@ -314,11 +394,12 @@ async function startService() {
   const deadline = Date.now() + 30000;
   let pid = null;
   while (Date.now() < deadline) {
+    if (spawnError) return { ok: false, error: `launcher spawn failed: ${spawnError.message}` };
     const nums = await probe();
     if (nums.length) { pid = nums[0]; break; }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  return { ok: !!pid, pid, error: pid ? null : "service did not listen within 30s" };
+  return { ok: !!pid, pid, error: pid ? null : `service did not listen within 30s` };
 }
 
 
@@ -425,9 +506,18 @@ async function syncDeclaration() {
 }
 
 
+function classifyHealthStatus(status) {
+  const n = Number(status);
+  if (!Number.isFinite(n) || n <= 0) return "unreachable";
+  if (n === 200) return "ok";
+  if (n === 401 || n === 403 || n === 407) return "auth-gated";
+  return "bad";
+}
+
 async function healthCheck() {
-  const base = "http://127.0.0.1:3080";
+  const base = `http://127.0.0.1:${PORT}`;
   const problems = [];
+  const notes = [];
   const fetchOnce = (url) =>
     new Promise((resolve) => {
       const mod = String(url).startsWith("https:") ? https : http;
@@ -441,9 +531,15 @@ async function healthCheck() {
       req.on("timeout", () => { req.destroy(); resolve(null); });
     });
   const home = await fetchOnce(base + "/");
-  if (!home || home.status !== 200) {
+  const kind = home ? classifyHealthStatus(home.status) : "unreachable";
+  if (kind === "unreachable" || kind === "bad") {
     problems.push(`GET / -> ${home ? home.status : "no response"}`);
-    return { ok: false, problems };
+    return { ok: false, problems, notes, error: problems.join("; ") };
+  }
+  if (kind === "auth-gated") {
+    notes.push(`GET / -> ${home.status} (auth-gated: the service answers but serves no frontend on /, so the dist/assets check is skipped)`);
+    await opsLog({ op: "main-update-health-auth-gated", status: home.status, port: PORT });
+    return { ok: true, problems, notes, error: null };
   }
   const refs = [...home.body.matchAll(/["'](\/(?:assets|plugins)\/[^"']+)["']/g)].map((m) => m[1]);
   for (const ref of refs.slice(0, 30)) {
@@ -452,7 +548,7 @@ async function healthCheck() {
     const isHtml = (r.ct || "").includes("text/html");
     if (r.status !== 200 || isHtml) problems.push(`${ref} -> ${r.status} ${isHtml ? "text/html(SPA fallback)" : r.ct}`);
   }
-  return { ok: problems.length === 0, problems };
+  return { ok: problems.length === 0, problems, notes, error: problems.length ? problems.join("; ") : null };
 }
 
 
@@ -703,6 +799,7 @@ async function syncProfilesToDeploy() {
 }
 
 async function fail(msg, code, extra = {}) {
+  progressFrozen = true;
   await writeProgress({
     phase: "error",
     running: false,
@@ -732,18 +829,17 @@ async function main() {
   let cacheDir = null;
   try {
     
-    await writeProgress({ phase: "download", label: "正在下载新版本（服务不中断）…", percent: 4 });
+    const DL_START = 10;
+    const DL_END = 55;
+    let dlLabel = "正在检查依赖树（npm dry-run，约 1-3 分钟）…";
+    let dlDetail = null;
+    const dlTicker = startProgressTicker(DL_START, DL_END, 180000, (pct, sec) => ({
+      phase: "download",
+      label: dlLabel,
+      percent: pct,
+      detail: dlDetail || `已等待 ${sec}s`,
+    }));
     let npmReady = false;
-    const dryRunStartedAt = Date.now();
-    const dryRunTicker = setInterval(() => {
-      const waited = Math.round((Date.now() - dryRunStartedAt) / 1000);
-      writeProgress({
-        phase: "download",
-        label: "正在检查依赖树（npm dry-run）…",
-        percent: Math.min(8, 4 + Math.floor(waited / 30)),
-        detail: `已等待 ${waited}s`,
-      });
-    }, 5000);
     try {
       
       await runNpm([...baseArgs, "--dry-run"], { cwd: ROOT, timeoutMs: 150000 });
@@ -755,25 +851,27 @@ async function main() {
         error: truncate(String((err && err.message) || err), 500),
         code: err && err.code,
       });
-    } finally {
-      clearInterval(dryRunTicker);
     }
     if (!npmReady) {
       
       installVia = "tarball";
       cacheDir = await mkdtemp(join(tmpdir(), "duc-dl-"));
+      dlLabel = "正在下载新版本（服务不中断）…";
       const todo = await collectUpdateTodo();
       const dl = await downloadTarballsToCache(todo, cacheDir, (p) => {
-        const percent = Math.min(60, 4 + Math.round((p.current / Math.max(1, p.total)) * 56));
+        const percent = Math.min(DL_END, DL_START + Math.round((p.current / Math.max(1, p.total)) * (DL_END - DL_START)));
+        dlTicker.setFloor(percent);
+        dlDetail = `已下载 ${p.current}/${p.total} 个包（${p.name}）`;
         writeProgress({
           phase: "download",
-          label: "正在下载新版本（服务不中断）…",
+          label: dlLabel,
           percent,
-          detail: `已下载 ${p.current}/${p.total} 个包（${p.name}）`,
+          detail: dlDetail,
           count: { done: p.current, total: p.total },
-        });
+        }).catch(() => {});
       });
       if (dl.ok.length === 0 && dl.failed.length > 0) {
+        await dlTicker.stop();
         return await fail(
           `tarball download failed: ${dl.failed.map((f) => `${f.name}: ${f.error}`).join("; ")}`,
           "E_DOWNLOAD",
@@ -787,10 +885,14 @@ async function main() {
         skipped: dl.skipped,
         failed: dl.failed.map((f) => f.name),
       });
+    } else {
+      dlLabel = "依赖树检查完成，正在准备下载新版本…";
+      dlDetail = "npm install 即将开始（下载与安装合并进行）";
     }
 
-    
-    await writeProgress({ phase: "stop", label: "下载完成，正在停止服务…", percent: 64 });
+    await dlTicker.stop();
+
+    await writeProgress({ phase: "stop", label: "下载完成，正在停止服务…", percent: 58 });
     const stop = await stopService();
     if (!stop.ok) return await fail(`failed to stop service: ${stop.error}`, "E_STOP");
     await opsLog({ op: "main-update-stop-service", ok: true });
@@ -798,19 +900,31 @@ async function main() {
     
     let output = "";
     if (installVia === "npm") {
-      await writeProgress({ phase: "install", label: "正在安装新版本…", percent: 70 });
+      const lockCount = await countLockPackages(ROOT);
+      const total = lockCount && lockCount > 0 ? lockCount : null;
+      const instLabel = "正在安装新版本（约 2-4 分钟，可安全离开此页面）…";
+      const instTicker = startProgressTicker(62, 78, 150000, (pct, sec) => ({
+        phase: "install",
+        label: instLabel,
+        percent: pct,
+        detail: total ? null : `npm 安装中，已等待 ${sec}s`,
+      }));
+      await writeProgress({ phase: "install", label: instLabel, percent: 62, detail: total ? `待解析 ${total} 个包` : "npm 安装中…" });
       await resetStaleLockfilesIfNeeded(TARGET);
       const installRes = await installWithFileLockRetry(
         () => runNpm(baseArgs, { cwd: ROOT, timeoutMs: 600000, onProgress: (p) => {
-          const total = 587;
-          const percent = Math.min(80, 70 + Math.round((p.httpCount / total) * 10));
+          const done = total ? Math.min(p.httpCount, total) : p.httpCount;
+          const signal = total
+            ? 62 + Math.round((done / total) * 16)
+            : 62 + Math.floor(p.httpCount / 40);
+          instTicker.setFloor(signal);
           writeProgress({
             phase: "install",
-            label: "正在安装新版本…",
-            percent,
-            detail: p.httpCount ? `已解析 ${p.httpCount}/${total} 个包` : "npm 安装中…",
-            count: { done: p.httpCount, total },
-          });
+            label: instLabel,
+            percent: Math.max(62, Math.min(78, signal)),
+            detail: total ? `已解析 ${done}/${total} 个包` : `已解析 ${done} 个包，安装进行中`,
+            count: { done, total },
+          }).catch(() => {});
         } }),
         {
           keepStopped: () => ensureServiceStopped(15000),
@@ -820,13 +934,14 @@ async function main() {
             await writeProgress({
               phase: "install",
               label: "检测到服务被拉起/文件占用，正在清理后重试…",
-              percent: 76,
+              percent: 72,
               detail: `第 ${attempt}/${3} 次重试`,
             });
           },
         }
       );
       if (!installRes.ok) {
+        await instTicker.stop();
         const installErr = installRes.error;
         const rollback = await rollbackFromBackup();
         return await fail(
@@ -836,25 +951,34 @@ async function main() {
           { stderr: installErr && installErr.stderr ? truncate(installErr.stderr, 2000) : null, rollbackOk: rollback.ok }
         );
       }
+      await instTicker.stop();
       const npmOut = installRes.result || {};
       output = truncate((npmOut.stdout || "") + (npmOut.stderr || ""), 3000);
     } else {
       const guard = await ensureServiceStopped(15000);
       if (!guard.ok) return await fail(`service could not be kept stopped: ${guard.error}`, "E_STOP");
-      await writeProgress({ phase: "install", label: "正在应用新版本…", percent: 72 });
+      const total = await countLockPackages(ROOT);
+      const applyTicker = startProgressTicker(64, 80, 120000, (pct, sec) => ({
+        phase: "install",
+        label: "正在应用新版本…",
+        percent: pct,
+        detail: `正在写入文件，已等待 ${sec}s`,
+      }));
       const ex = await extractTreeFromCache(cacheDir, (p) => {
-        const percent = Math.min(82, 70 + Math.round((p.current / Math.max(1, p.total)) * 12));
+        const percent = Math.max(64, Math.min(80, 64 + Math.round((p.current / Math.max(1, p.total)) * 16)));
+        applyTicker.setFloor(percent);
         writeProgress({
           phase: "install",
           label: "正在应用新版本…",
           percent,
           detail: `已应用 ${p.current}/${p.total} 个包（${p.name}）`,
           count: { done: p.current, total: p.total },
-        });
+        }).catch(() => {});
       });
+      await applyTicker.stop();
       output = `tarball whole-tree: ${ex.updated.length}/${ex.total} packages applied` +
         (ex.failed.length ? ` (failed: ${ex.failed.map((f) => f.name).join(", ")})` : "");
-      await opsLog({ op: "main-install-tarball-tree-ok", updated: ex.updated.length, total: ex.total, failed: ex.failed });
+      await opsLog({ op: "main-install-tarball-tree-ok", updated: ex.updated.length, total: total || ex.total, failed: ex.failed });
     }
 
     
@@ -870,10 +994,16 @@ async function main() {
     }
 
     
-    await writeProgress({ phase: "verify", label: "校验安装完整性…", percent: 85 });
+    const verifyTicker = startProgressTicker(84, 87, 8000, (pct, sec) => ({
+      phase: "verify",
+      label: "校验安装完整性…",
+      percent: pct,
+      detail: sec > 4 ? `已校验 ${sec}s` : null,
+    }));
     const verify = await verifyTree();
     if (!verify.ok) {
       const rollback = await rollbackFromBackup();
+      await verifyTicker.stop();
       return await fail(
         `integrity check failed: ${verify.problems.join("; ")}` +
           (rollback.ok ? " — restored from backup" : " — ROLLBACK ALSO FAILED"),
@@ -882,30 +1012,107 @@ async function main() {
       );
     }
 
-    
-    await writeProgress({ phase: "sync-decl", label: "同步版本声明…", percent: 90 });
+    await writeProgress({ phase: "sync-decl", label: "同步版本声明…", percent: 88 });
     await syncDeclaration();
     await syncProfilesToDeploy();
+    await verifyTicker.stop();
 
     
-    await writeProgress({ phase: "restart", label: "重启 dsh 服务…", percent: 94 });
-    const rs = await startService();
-    await writeProgress({ phase: "health", label: "健康检查…", percent: 97 });
-    const health = await healthCheck();
-    if (!rs.ok || !health.ok) {
-      return await fail(
-        `update installed ${TARGET} but restart/health failed: ${rs.error || health.problems.join("; ")}`,
-        "E_RESTART",
-        { health: health.problems || null }
-      );
+    const restartTicker = startProgressTicker(92, 95, 20000, (pct, sec) => ({
+      phase: "restart",
+      label: "正在重启 dsh 服务并等待端口就绪…",
+      percent: pct,
+      detail: `已等待 ${sec}s`,
+    }));
+    let startRes;
+    try {
+      startRes = await startService();
+    } finally {
+      await restartTicker.stop();
+    }
+    await writeProgress({ phase: "health", label: "健康检查…", percent: 96 });
+    let health = await healthCheck();
+    const restartWatchStartedAt = Date.now();
+    let restartsSpawned = 1;
+    let waitRound = 0;
+    const watchProgress = (round) => async () => {
+      const waited = Math.round((Date.now() - restartWatchStartedAt) / 1000);
+      await writeProgress({
+        phase: "restart-pending",
+        label: "安装已完成，正在等待服务恢复…",
+        percent: Math.min(99, 96 + round),
+        detail: `已等待 ${waited}s（大版本首次启动可能较慢，安装与同步均已成功）`,
+      });
+    };
+    while (!health.ok && Date.now() - restartWatchStartedAt < RESTART_EXTRA_WINDOW_MS) {
+      waitRound += 1;
+      await watchProgress(waitRound)();
+      const listening = await waitPortQuiet(10000, watchProgress(waitRound));
+      if (listening) {
+        health = await healthCheck();
+        continue;
+      }
+      if (restartsSpawned < RESTART_MAX_SPAWNS) {
+        restartsSpawned += 1;
+        const spawnTicker = startProgressTicker(98, 98, 1000, () => ({
+          phase: "restart-pending",
+          label: "安装已完成，正在重新拉起服务…",
+          percent: 98,
+          detail: `第 ${restartsSpawned}/${RESTART_MAX_SPAWNS} 次尝试`,
+        }));
+        try {
+          startRes = await startService();
+        } finally {
+          await spawnTicker.stop();
+        }
+      } else {
+        await sleep(5000);
+      }
+      health = await healthCheck();
+    }
+    if (!health.ok) {
+      const waited = Math.round((Date.now() - restartWatchStartedAt) / 1000);
+      const reason = [startRes.error, health.problems.join("; ")].filter(Boolean).join(" / ") || "unknown";
+      const detail =
+        `安装已完成（installed=${TARGET}，完整性校验与版本声明同步均通过），` +
+        `但服务在约 ${waited} 秒的等待后仍未恢复健康：${reason}。` +
+        `本次更新并未失败——请手动重启 dsh（或刷新页面）后即可使用新版本。`;
+      progressFrozen = true;
+      await writeProgress({
+        phase: "error",
+        running: false,
+        percent: null,
+        label: "安装完成，但服务未自动恢复",
+        detail: null,
+        count: null,
+        error: detail,
+        code: "E_RESTART",
+        installed: TARGET,
+        restartPending: true,
+        restartOk: startRes.ok,
+        healthProblems: health.problems || null,
+      });
+      await opsLog({
+        op: "main-update-restart-pending",
+        installed: TARGET,
+        waitedSec: waited,
+        restartOk: startRes.ok,
+        healthProblems: health.problems || null,
+      });
+      const recover = await startService();
+      await opsLog({ op: "main-update-crash-recovery", startOk: recover.ok, error: recover.error || null });
+      return { ok: false, installed: TARGET, restartPending: true, error: detail, code: "E_RESTART" };
     }
 
     await opsLog({ op: "main-update-ok", to: TARGET, type, backup: BACKUP, forced: false, installVia });
+    progressFrozen = true;
     await writeProgress({
       phase: "done",
       running: false,
       percent: 100,
       label: "更新完成",
+      detail: null,
+      count: null,
       result: { ok: true, installed, latest: TARGET },
     });
     return { ok: true, installed, latest: TARGET, type };
@@ -920,16 +1127,51 @@ async function main() {
   }
 }
 
+let fatalReported = false;
+async function reportFatal(err) {
+  if (fatalReported) return;
+  fatalReported = true;
+  progressFrozen = true;
+  const msg = truncate(String((err && err.stack) || (err && err.message) || err), 3000);
+  try {
+    await writeProgress({
+      phase: "error",
+      running: false,
+      percent: null,
+      label: "更新中断",
+      error: msg,
+      code: (err && err.code) || "E_WORKER_CRASH",
+      crashed: true,
+    });
+  } catch {
+    
+  }
+  await opsLog({ op: "main-update-worker-fatal", error: msg, code: (err && err.code) || "E_WORKER_CRASH" });
+  try {
+    await rm(join(DSH_HOME, "dsh-update-checker-update.lock"), { force: true });
+  } catch {
+    
+  }
+}
+
+process.on("uncaughtException", (err) => {
+  reportFatal(err).finally(() => process.exit(1));
+});
+process.on("unhandledRejection", (err) => {
+  reportFatal(err).finally(() => process.exit(1));
+});
+
 if (!process.env.DSH_UC_UPDATE_NO_RUN) {
   main()
     .then((r) => {
       console.log("worker result:", JSON.stringify(r));
       process.exit(r && r.ok ? 0 : 1);
     })
-    .catch((e) => {
+    .catch(async (e) => {
       console.error("worker fatal:", e);
+      await reportFatal(e);
       process.exit(1);
     });
 }
 
-export { verifyTree, ensureServiceStopped, killPidsOnPort, portOccupied, portPids, startService };
+export { verifyTree, ensureServiceStopped, killPidsOnPort, portOccupied, portPids, startService, phaseCreepPercent, countLockPackages, startProgressTicker, classifyHealthStatus, healthCheck };

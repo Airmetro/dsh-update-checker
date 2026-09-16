@@ -60,6 +60,7 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
   - systemd / npm -g 逃生口：自动探测万一没命中你的布局时，把 `DSH_DEPLOY_ROOT` 设为包含 `node_modules/@deepseek-ai/dsh` 的目录（Linux 上通常是 `<npm prefix>/lib`）。
 - **node / npm 可执行文件** — `resolveNodeExe()` 定位真实 node：`DSH_UC_NODE_EXE` 覆盖 → `npm_node_execpath` → `process.execPath`（若确实是 node）→ 常见安装目录 → PATH。这就是 DSH Desktop（Electron，`process.execPath` 是 electron.exe）能跑 npm 更新插件的原因；若你的桌面端把 node 打包在别处，设 `DSH_UC_NODE_EXE` 指向它即可。若你的 node 由 **mise / asdf / nvm** 管理、PATH 里只有版本管理器的 **shim**（如 `~/.local/share/mise/shims/node`），shim 目录旁并没有 npm；v1.4.22+ 会通过 `node -p process.execPath` 在 shim 后解析出真实二进制。如果仍失败（或想免去这次探测），把 `DSH_UC_NODE_EXE` 设为真实二进制，如 `mise which node` / `asdf which node`。
 - **重启启动器** — 自适应：在部署根下探测常见启动脚本名；web 端口读取运行中的 `webServer.port`。
+- **调优环境变量** — `DSH_UC_UPDATE_PORT` 指定更新 worker 停止/启动/探测的端口（默认 `3080`）；`DSH_UC_RESTART_WINDOW_MS` 指定首次启动偏慢时继续观察的时长（默认 `150000`，观察期间进度记录持续刷新）。
 
 ## 平台与安装布局支持
 
@@ -68,7 +69,7 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
   - **仅 Windows** — 重启流程 spawn PowerShell。
   - 主程序更新自适应：部署根有 `package.json` 时原位 `npm install`，否则 `npm install -g`；两种形态都先过 dry-run 守卫并在安装后回读校验版本。
   - 插件更新 — 临时目录安装 + 拷贝，兼容 npm 11/12+。
-- 其它平台/布局下横幅与版本检查仍可用，但更新/重启按钮需要改代码。Linux/macOS 支持是自然的下一步。
+- 其它平台/布局下横幅与版本检查仍可用。Linux/macOS 上主框架更新路由现在会立即以 `501 E_PLATFORM_UNSUPPORTED` 拒绝（该平台的安装/重启仍需改代码），而不是卡在 8% 并残留横幅；插件更新与回滚可用。完整 POSIX 支持是自然的下一步。
 
 ## 说明
 
@@ -77,6 +78,21 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package.json` + `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json` + `main-snapshot` 里 `@deepseek-ai` 框架整树副本），主程序与插件都有对应回滚路由；主程序回滚在 `main-snapshot` 存在时直接从磁盘恢复，而不是从 registry 重新安装旧版本。
 
 ## 更新日志
+
+- **v1.4.23** — 主程序实时进度、残留更新状态自愈、插件安全替换（issue #17 #18 #20 #21 #25，PR #23 #24）：
+  - **依赖树检查阶段有真实进度**（#18 及"6% → 64%"反馈）：此前下载阶段在整个 `npm install --dry-run`（数分钟）里一直停在 4–6%，然后直接跳到 64%。现在每个阶段都有单调递增的"爬坡"计时器，每秒重写一次进度记录（`phaseCreepPercent`，已导出并单测），npm/tarball 的真实计数只把下限往上抬。里程碑整体重排（`下载 10→55`、`停止服务 58`、`安装 62→78`、`校验 84→87`、`同步声明 88`、`重启 92→95`、`健康检查 96`、`等待恢复 97–98`、`完成 100`），任何阶段都不再瞬移；启动服务的 30 秒与重启观察期间同样持续刷新进度。
+  - **重启改为"继续观察"而不是直接判失败**（#18）：安装、完整性校验、版本声明同步都成功之后，重启失败不再终止更新。worker 进入 `restart-pending` 状态持续刷新进度，重新探测端口并按需重新拉起启动器，最长等待 `DSH_UC_RESTART_WINDOW_MS`（默认 150000 毫秒），之后才以 `E_RESTART` 结束——记录里带 `installed`、`restartPending: true`，文案明确"安装本身已成功"。期间端口起来即判定成功。
+  - **进度计数修正**（#18）：安装阶段不再用硬编码的 `587` 去除 npm 的 http 行计数；总数改为从真实 lockfile 读取（`countLockPackages`，未知时 `null`），`done` 按总数封顶，界面上不会再出现 `done > total`（如 1338/587）。横幅同时提示"关闭此页面不会中断更新"。
+  - **前端需要认证不再被误判为服务坏了**（#18，实机场景）：健康检查原先要求 `GET /` 返回 200，于是在 `/` 返回 **401/403**（口令/令牌保护界面）的机器上，**每一次安装成功最后都以 `E_RESTART: update installed <version> but restart/health failed: GET / -> 401` 收尾**，而紧接着的崩溃自愈又把服务拉起来了——用户被告知"更新失败"，实际早已成功。健康判定现在抽成纯函数 `classifyHealthStatus`：200 → 继续做 dist/assets 全量校验；401/403/407 → 服务活着但前端受认证保护，判定更新成功并跳过资源扫描（记录 `main-update-health-auth-gated`）；超时、5xx 与其它 4xx 仍判失败。`E_RESTART` 文案也同时给出启动器错误与健康检查问题。
+  - **残留进度/状态自愈**（#25）：修掉 `writeProgress` 里被缓存记录覆盖 `at` 时间戳的问题——`at` 会永远停在下发第一次写入的时刻，这正是"更新中断后看起来仍是更新中"或"正在跑的更新看起来过期"的根因。进度记录现在写入属主 `workerPid`/`hostPid`；`isStaleProgress` 在属主进程已消失时判为陈旧（无 pid 时按 10 分钟无更新判定），Host 在启动时与读取时把它改写成 `running:false` + `phase:error` + `code:E_INTERRUPTED` 并释放更新锁。陈旧锁不再阻塞新更新 10 分钟：超过 2 分钟拉起宽限期且无存活 worker 的锁会被丢弃。
+  - **worker 崩溃不再留下 `running:true`**（#25）：`uncaughtException`/`unhandledRejection` 与 `main()` 的致命异常都会写入一条 `error` 进度并释放锁，此前进程直接消失。`startService`/`taskkill` 的 spawn 补上 `error` 监听（POSIX 的 `ENOENT`、批处理文件的 `EINVAL` 以前会变成未处理的 error 事件、把 worker 打断在更新中途），拉起失败也改为快速失败而不是干等 30 秒。
+  - **插件替换改为"先暂存后交换"**（#21）：`backupAndReplace` 先把新内容拷到目标旁的 `.dsh-uc-staging-*`，再把旧目录改名为 `.dsh-uc-trash-*`，然后把暂存树改名就位，最后尽力删除回收站。此前"先删后拷"在 Windows 上遇到运行中宿主映射的原生模块（如 `better_sqlite3.node`）会在**已经删掉全部文件之后**才报 `EPERM`，把插件掏成只剩那个被占用文件（连 `package.json` 都没了）、并连带拖垮宿主。现在交换前任何失败都不会动已装包，被占用的回收站留待下次更新清理。"不再提示"两个按钮也不再互相写对方的开关。
+  - **瞬时请求失败不再触发整页刷新**（#20）：client 的 1.5 秒状态探针把任何一次失败请求（LLM 流式输出、工具执行、代理抖动）都当成"服务重启过"，下一次成功就无条件 `location.reload()`，导致对话过程中整页刷新。现在改为由服务端 `instanceId` 驱动：只有实例真的变化才刷新，且同一实例最多刷新一次（`sessionStorage` 守护），瞬时失败被完全忽略。
+  - **locale 服务时序修复**（#22/#23）：client 半身改为等待 `locale` 服务（`ctx.inject(["slots", "locale"])`）后再注册字典与插槽绑定，不再在 apply 时读 `ctx.get("locale")` 静默退化为 `fallbackT()`（永远中文），英文界面下不再显示中文。
+  - **POSIX 主程序更新快速失败**（#24）：Linux/macOS 上主框架 `/update` 路由在创建锁、备份、拉起 Windows 专用 PowerShell 之前就返回 `501 E_PLATFORM_UNSUPPORTED`，不再卡在 8% 并残留横幅。完整 POSIX 支持仍待上游 PR #19。
+
+- **v1.4.22** — 版本管理器 shim 解析（issue #17）：
+  - `resolveNodeExe()` 通过 shim 执行 `node -p process.execPath` 反查真实 Node，`getNpmCli()` 不再回退到不存在的路径，而是抛出带 `DSH_UC_NODE_EXE` 提示的 `ENPMCLI`，避免 npm 阶段出现 `MODULE_NOT_FOUND`。
 
 - **v1.4.21** — 跨 npm -g 嵌套布局的主程序更新（#16）+ 外部守护进程 / 文件占用恢复（#15）+ 错误部署根提前拦截（#14）：
   - **npm -g 嵌套布局校验**（#16）：`verifyTree`/`verifyDeployTree` 现在按真实位置定位 `dsh-web-frontend`——顶层或嵌套在 `dsh/node_modules/@deepseek-ai`——而不再只看顶层，全局安装不再以 `integrity check failed: dsh-web-frontend dist/index.html unreadable` 回滚。
