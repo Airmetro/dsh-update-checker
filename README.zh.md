@@ -100,15 +100,6 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
   - **错误部署根提前拦截**（#14）：更新路由在动手前先校验解析出的部署根确实包含 `dsh-web-frontend`（顶层或嵌套），否则以 `E_LAYOUT` 快速失败，而不是装到错误位置后再回滚。
   - **stale-lockfile 检测加固**：`readLockedDshVersion` 同时检查 `node_modules/.package-lock.json`，并把重置逻辑抽成可单测单元，确保"lockfile 声明了目标但物理树滞后"的错位被可靠清除。
 
-- **v1.4.20** — 主程序更新健壮性：stale-lockfile 强制重装修复 + 前端 dist 校验改用 realpath（issue #14）：
-  - **stale-lockfile 强制重装**：当目标版本已写入 `package-lock.json` / `node_modules/.package-lock.json`（上一次失败或部分更新的残留）而物理安装的 `@deepseek-ai` 树仍是旧版时，npm 的 reify 信任 lockfile 而跳过重装，导致更新以 `E_VERSION: update did not reach <target> (installed=<old>)` 告终并回滚——一个永恒的"假更新"循环。worker 现在检测到这种不一致（lockfile 声明版本 ≠ 物理版本，且物理 ≠ 目标）后，会在安装前删除这两个过期的 lockfile，强制 npm 重新解析并真正重装目标版本。
-  - **前端 dist 校验改用 realpath**（#14）：安装后的完整性校验读取 `dsh-web-frontend/dist/index.html`；现在先通过 `realpath` 解析该目录（跟随 junction / pnpm-hoisted 布局），避免误判"已装好的前端"，仍读不到时也会报出实际尝试的路径——此前会以 `integrity check failed: dsh-web-frontend dist/index.html unreadable` 回滚。
-
-- **v1.4.19** — 无稳定版时跟随预发布 + npx 缓存布局提示（#14）：
-  - **无稳定版回退**：`pickMainLatest` 在没有任何稳定版时改为返回已发布最高版本（含预发布），不再返回 `null` 导致检查报「无稳定版；请开启 allowPrerelease」。目前主框架只有 `rc`/`alpha`，默认只跟稳定版的旧策略会让插件形同虚设。
-  - **有稳定版仍稳定优先**：只要存在任一稳定版，仍优先最高稳定版、仅在开启 `allowPrerelease` 时才跟进预发布（保留 v1.4.17 的事故防护）。
-  - **npx 缓存布局提示**（#14）：检测到部署根是 npm 的 `npx` 缓存路径（`.../_npx/...`）时，状态检查给出明确说明，主框架更新路由以 `E_NPX_CACHE` 拒绝并提示改用官方本地部署或 `npm i -g @deepseek-ai/dsh`，不再装到错误位置后于完整性校验才失败。
-
 ## 开发
 
 - `lib/index.js` — Host 半身：纯 ESM，仅依赖 Node 内置模块，无构建步骤；纯函数以命名 ESM 导出暴露，供单元测试。

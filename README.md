@@ -100,15 +100,6 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
   - **Early wrong-deploy-root guard** (#14): the update route now checks the resolved root actually contains `dsh-web-frontend` (top-level or nested) before touching anything, failing fast with `E_LAYOUT` instead of installing to the wrong place and rolling back.
   - **Stale-lockfile detection hardened**: `readLockedDshVersion` also inspects `node_modules/.package-lock.json`, and the reset is extracted into a testable unit so a lockfile claiming the target but physically lagging the tree is reliably cleared.
 
-- **v1.4.20** — Main-program update robustness: stale-lockfile reify fix + frontend-dist verify via realpath (issue #14):
-  - **Stale-lockfile reify fix**: when the target version is already declared in `package-lock.json` / `node_modules/.package-lock.json` (a leftover from a failed or partial update) but the physically installed `@deepseek-ai` tree is still older, npm's reify trusted the lockfile and skipped re-installing, so the update ended in `E_VERSION: update did not reach <target> (installed=<old>)` and rolled back — a perpetual "fake update" loop. The worker now detects this mismatch (lockfile-declared version ≠ physical version, and physical ≠ target) and deletes both stale lockfiles before installing, forcing npm to re-resolve and really re-install the target version.
-  - **Frontend-dist verify via realpath** (#14): the post-install integrity check reads `dsh-web-frontend/dist/index.html`; it now resolves that directory through `realpath` (following junction / pnpm-hoisted install layouts) so a legitimately installed frontend is not mis-flagged, and if it still cannot be read it reports the exact path tried instead of a bare "unreadable" — previously the update rolled back with `integrity check failed: dsh-web-frontend dist/index.html unreadable`.
-
-- **v1.4.19** — Follow pre-release builds when no stable release exists + clear npx-cache-layout warning (issue #14):
-  - **No-stable fallback**: `pickMainLatest` now returns the highest published version (including pre-releases) when there are no stable `@deepseek-ai/dsh` releases, instead of returning `null` and failing the status check with "no stable version; enable allowPrerelease". The main framework currently ships only `rc`/`alpha` builds, so the stable-only default made the checker pointless.
-  - **Stable-first kept when a stable exists**: if any stable release is present, the checker still prefers the highest stable and only follows pre-releases when `allowPrerelease` is on (preserving the v1.4.17 incident guard).
-  - **npx-cache-layout warning** (#14): when the resolved deploy root is an npm `npx` cache path (`.../_npx/...`), the status check reports a clear note and the main-framework update route refuses with `E_NPX_CACHE`, pointing to the official local install or `npm i -g @deepseek-ai/dsh`, instead of silently installing to the wrong place and failing the post-install integrity check.
-
 ## Development
 
 - `lib/index.js` — Host half: plain ESM, Node built-ins only, no build step; pure helpers exported as named ESM exports for unit testing.
