@@ -15,7 +15,7 @@
 
 
 
-import { writeFile, appendFile, rm, mkdir, mkdtemp, readdir, lstat, readFile, cp, realpath } from "node:fs/promises";
+import { writeFile, appendFile, rm, mkdir, mkdtemp, readdir, lstat, readFile, cp, realpath, symlink } from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -35,6 +35,7 @@ const PROGRESS_FILE = process.env.DSH_UC_UPDATE_PROGRESS;
 const OPS_FILE = process.env.DSH_UC_UPDATE_OPS;
 const DSH_HOME = process.env.DSH_UC_UPDATE_DSH_HOME || dirname(dirname(dirname(ROOT)));
 const SELF_DIR = process.env.DSH_UC_UPDATE_SELF_DIR;
+const PREV_INSTANCE = process.env.DSH_UC_UPDATE_PREV_INSTANCE || "";
 const PACKAGE = "@deepseek-ai/dsh";
 
 if (!ROOT || !TARGET || !BACKUP || !PROGRESS_FILE || !OPS_FILE) {
@@ -514,6 +515,39 @@ function classifyHealthStatus(status) {
   return "bad";
 }
 
+/**
+ * Pure classification of one identity probe. "fresh" proves a new dsh process is
+ * serving, "stale" that the very instance which ran before the restart still is,
+ * and "unavailable" that the probe could not decide (no prior id to compare with,
+ * this plugin's routes not composed, or a route not answering yet) — in which
+ * case the caller keeps the previous behaviour instead of failing an update that
+ * may well be healthy.
+ */
+function classifyInstanceIdentity(prevInstanceId, probedInstanceId) {
+  if (typeof prevInstanceId !== "string" || prevInstanceId === "") return "unavailable";
+  if (typeof probedInstanceId !== "string" || probedInstanceId === "") return "unavailable";
+  return probedInstanceId === prevInstanceId ? "stale" : "fresh";
+}
+
+/**
+ * Read the *serving* dsh instance's id from this plugin's own routes. The cheap
+ * progress route answers during an update and echoes the live instance id; the
+ * status route is the authoritative fallback.
+ */
+async function probeInstanceId(fetchOnce, base) {
+  for (const route of ["/dsh-update-checker/update-progress.json", "/dsh-update-checker/status.json"]) {
+    const res = await fetchOnce(base + route);
+    if (!res || res.status !== 200) continue;
+    try {
+      const data = JSON.parse(res.body);
+      if (data && typeof data.instanceId === "string" && data.instanceId !== "") return data.instanceId;
+    } catch {
+      
+    }
+  }
+  return null;
+}
+
 async function healthCheck() {
   const base = `http://127.0.0.1:${PORT}`;
   const problems = [];
@@ -536,6 +570,16 @@ async function healthCheck() {
     problems.push(`GET / -> ${home ? home.status : "no response"}`);
     return { ok: false, problems, notes, error: problems.join("; ") };
   }
+  const probedInstance = await probeInstanceId(fetchOnce, base);
+  const identity = classifyInstanceIdentity(PREV_INSTANCE, probedInstance);
+  if (identity === "stale") {
+    problems.push(
+      `instance identity: ${probedInstance} is still the dsh instance that ran before the restart (previous ${PREV_INSTANCE}) — something answers on ${PORT}, but the updated build did not come up`
+    );
+    return { ok: false, problems, notes, error: problems.join("; ") };
+  }
+  if (identity === "fresh") notes.push(`instance identity: ${probedInstance} (new process, previous ${PREV_INSTANCE})`);
+  else notes.push("instance identity: unavailable (this plugin's routes reported no new instance id, so only the port answer was verified)");
   if (kind === "auth-gated") {
     notes.push(`GET / -> ${home.status} (auth-gated: the service answers but serves no frontend on /, so the dist/assets check is skipped)`);
     await opsLog({ op: "main-update-health-auth-gated", status: home.status, port: PORT });
@@ -781,8 +825,29 @@ async function syncProfilesToDeploy() {
           results.push({ name: n, ok: true, skipped: "junction" });
           continue;
         }
+        // dst 存在但不是 deploy 的那一份：可能是旧版残留的实体副本，或指向旧 deploy 根的链接。
+        // 只回收确实装着这个包的路径，绝不删除来路不明的东西。
+        const st = await lstat(dst).catch(() => null);
+        let reclaimable = Boolean(st && st.isSymbolicLink());
+        if (st && st.isDirectory()) {
+          const [pjDst, pjSrc] = await Promise.all([
+            readJson(join(dst, "package.json")),
+            readJson(join(src, "package.json")),
+          ]);
+          reclaimable = Boolean(pjDst && pjSrc && pjDst.name && pjDst.name === pjSrc.name);
+        }
+        if (!reclaimable) {
+          results.push({
+            name: n,
+            ok: false,
+            error: `${dst} exists and is not the deploy copy of ${n}; refusing to replace it`,
+          });
+          continue;
+        }
+        await rm(dst, { recursive: true, force: true });
       }
-      await cp(src, dst, { recursive: true, force: true });
+      await mkdir(dirname(dst), { recursive: true });
+      await symlink(src, dst, process.platform === "win32" ? "junction" : "dir");
       results.push({ name: n, ok: true });
     } catch (err) {
       results.push({ name: n, ok: false, error: String((err && err.message) || err) });
@@ -1174,4 +1239,4 @@ if (!process.env.DSH_UC_UPDATE_NO_RUN) {
     });
 }
 
-export { verifyTree, ensureServiceStopped, killPidsOnPort, portOccupied, portPids, startService, phaseCreepPercent, countLockPackages, startProgressTicker, classifyHealthStatus, healthCheck };
+export { verifyTree, ensureServiceStopped, killPidsOnPort, portOccupied, portPids, startService, phaseCreepPercent, countLockPackages, startProgressTicker, classifyHealthStatus, classifyInstanceIdentity, healthCheck };

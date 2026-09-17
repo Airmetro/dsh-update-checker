@@ -7,15 +7,15 @@
 ## 功能特性
 
 - **完整更新生命周期** — 检查、备份、更新、回滚、重启，一个插件全部完成。
-- **主程序检查** — 对比已安装的 `@deepseek-ai/dsh` 与 npm 最新版（全量 packument、**稳定版优先**、semver 感知——除非开启 `allowPrerelease` 设置，否则不选 alpha/beta/rc 预发布版，绝不再自动把主框架升进非预期的预发布通道）。
+- **主程序检查** — 对比已安装的 `@deepseek-ai/dsh` 与 npm 最新版（全量 packument、**稳定版优先**、semver 感知）。预发布版本只有在与当前部署**同频道**时才会安装——跨频道提升（如 `rc` → `alpha`）会以 `E_PRERELEASE` 拒绝，除非显式开启 `allowPrerelease`，因此绝不会把主框架升进非预期的预发布通道。
 - **第三方插件检查** — 扫描已安装的非官方插件（布局无关，支持 pnpm hoisted 的多位置 `node_modules`），逐一与 npm/GitHub 双源对比（目标版本取较高者）；无发布源的本地工具归入 `ignored`。同名插件多位置时**优先组合所属 profile 的副本**（其余记为 `copies` 供区分），可**逐个"不再提醒"排除**（`excludedPlugins`，设置页可一键恢复）。
 - **GitHub 更新通道** — 对 GitHub 域使用专用 HTTPS 客户端（兼容本地自签名证书代理；npm registry 仍走严格校验），带重定向跟随、大小上限与超时；codeload tarball 解压前校验构建产物。
 - **界面内横幅** — 跟随 DSH 界面语言（zh/en），显示有更新 / 已是最新 / 失败三种状态，支持"不再提示"；更新横幅展示**变更说明 brief**（vX→vY + 风险等级，有 GitHub release 正文时附更新要点）。
 - **安全的一键更新** — 主程序：dry-run 守卫（计划内有 remove 即中止）→ 快照备份（版本清单 + `main-snapshot` 里的 `@deepseek-ai` 整树副本，供离线回滚）→ 布局自适应安装（原位或 `-g`）→ 安装后回读校验 `installed==latest`；插件：临时目录安装 + 拷贝、依赖版本核对、npm ≥ 12 自动补 `--allow-scripts` 构建原生依赖。**更新（与回滚）会持久化回 profile 的 `package.json` + 锁文件**（`pnpm install --lockfile-only` / `npm install --package-lock-only`），之后的 install 不会再把插件悄悄拉回旧版——不再出现「同一插件反复提醒更新」的死循环。
 - **真回滚** — 主程序 `POST /rollback`、插件 `POST /plugin-rollback`；`GET /backups.json` 列出两者备份。
-- **看门狗重启** — 启动器从当前进程 argv 派生，杀 PID + 端口双保险，恢复确认升级为端口监听 + HTTP 200 探测（`GET /restart-status.json`）。
+- **看门狗重启** — 启动器从当前进程 argv 派生，杀 PID + 端口双保险；恢复确认 = 端口监听 + HTTP 200 探测（`GET /restart-status.json`）+ **从插件自身路由读回的实例 id**，"端口有人应答"不再被当成"新版本已经起来"。
 - **写操作安全** — 所有写路由除 `{ "confirm": true }` 外还要求回环来源（127.0.0.1/::1），局域网客户端无法远程触发更新/重启/回滚。
-- **零配置可移植** — profile 目录 / `$DSH_HOME` / 组合文件 / 部署根均由插件自身安装位置自动推导，任何机器无需改代码。
+- **零配置可移植** — profile 目录 / 组合文件 / 部署根由插件自身安装位置自动推导；状态、备份与日志遵循 `DSH_HOME`（再退回 `~/.dsh`）。任何机器无需改代码。
 
 ### Host 与 Client
 
@@ -79,6 +79,17 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 ## 更新日志
 
+- **v1.5.0** — `syncProfilesToDeploy` 改为建链接而非复制（修复主程序更新之后启动崩溃）：
+  - **根因**：函数名与日志字段 `junctionSkipped` 都写着"链接"，但新建路径从未建过链接——用的是 `cp(src, dst, { recursive: true, force: true })`。已存在且 realpath 指向同一份的条目会被跳过（实机 236 个里跳过 228 个），而 profile 里**尚不存在**的包（`0.1.6-alpha.1` 更新带来的 8 个）被**实体复制**进 `$DSH_HOME/profiles/node_modules/@deepseek-ai/`。
+  - **为何致命**：dsh 的 `healProfilesModuleFallback`/`ensureSymlink` 只接管符号链接或 dsh 托管的模块代理目录，真实目录会直接抛错 `dsh: <path> exists and is not a symlink or dsh-managed module proxy; remove it so dsh can manage the installation fallback`，且发生在 `composeProfile` 阶段——**Web 服务监听之前**，于是下一次启动直接崩掉；而更新本身却报告成功（`main-profile-sync total:236 junctionSkipped:228 failed:[]`）。
+  - **修复**：写入路径改为 `mkdir` + `symlink(src, dst, process.platform === "win32" ? "junction" : "dir")`，profile 只保留指向部署侧唯一一份的链接——这也正是 `healProfilesModuleFallback` 期望的形态。
+  - **自愈**：目标已存在但不是部署副本时会安全回收——符号链接（含悬空链接）直接重建；实体目录必须 `package.json` 的 `name` 与部署侧一致才替换；其余一律原封不动并记一条失败（`refusing to replace`），顺带堵上第二个此前未被报告的隐患：`fs.cp(..., { force: true })` 对"同名但来自别处"的目录不会报错，而是覆盖那个包的文件、留下其余内容，把它静默毁掉。
+  - **回归测试**：`scripts/integration-sync-profiles.test.mjs` 从真实 worker 源码里**提取** `syncProfilesToDeploy` 执行（避免测试与实现漂移），覆盖六个场景——新包建为链接、残留实体副本被回收、同名外来目录绝不被删除、悬空链接被重建、非 `dsh` 前缀包被忽略、deploy 树不可读时安全退出。同一套用例对 1.4.23 的 worker 4/6 失败，对本版 6/6 通过。
+  - **安装后的健康检查现在证明"新进程真的起来了"**：原先只要端口有人应答就算成功——`GET /` 返回 200 就扫资源，返回 401/403/407 直接判成功——于是在 `composeProfile` 阶段就崩掉（根本没有服务器）的构建也会被报告为"更新成功"。现在宿主把自己当前的 `instanceId` 交给 worker，worker 从插件自身的路由读回（`update-progress.json`，其次 `status.json`，两者都无需浏览器会话即可访问）：读到**不同**的 id 才说明新构建确实起来了；读到**相同**的 id 说明重启前那个实例还在应答，本次更新判**失败**。探针无法判断时（插件未组合、路由尚未就绪、宿主较旧没传 id）保持原有行为，不把可能健康的更新误判为失败。
+  - **预发布闸门改为按"频道"判断，而不再问"是否存在正式版"**：原条件是 `isPrerelease(target) && !allowPrerelease && hasStable`，而 `hasStable` 的含义是"npm 上存在非预发布版本"。`@deepseek-ai/dsh` 至今发布的**全部**版本都是 rc/alpha，`hasStable` 恒为 false，这道闸门从未生效：`allowPrerelease: false` 的部署照样被从 `rc` 升到了 `alpha`。现在按预发布标识（`alpha`/`beta`/`rc`/正式版）比较——同频道升级放行，跨频道提升以 `E_PRERELEASE` 拒绝并在文案里指明 `allowPrerelease` 设置；数据缺失时失败开放（宁可不拦，也不误拦）。
+  - **状态、备份与日志遵循 `DSH_HOME`**：原先只按"本包装在哪个 node_modules"推导 home，装在 `…/profiles/node_modules` 之外时会把状态写到程序文件旁边。现在：布局确实是 Harness home 时仍以安装位置为准（`DSH_UC_PROFILE_NODE_MODULES` 覆盖与测试隔离因此不受影响），否则退回 `DSH_HOME`，再退回 `~/.dsh`。
+  - **已被此 bug 影响的机器如何自救**：把 `$DSH_HOME/profiles/node_modules/@deepseek-ai/` 下的**真实目录移走**（不要删，先备份），下次启动 dsh 会自动把它们重建为 junction。
+
 - **v1.4.23** — 主程序实时进度、残留更新状态自愈、插件安全替换（issue #17 #18 #20 #21 #25，PR #23 #24）：
   - **依赖树检查阶段有真实进度**（#18 及"6% → 64%"反馈）：此前下载阶段在整个 `npm install --dry-run`（数分钟）里一直停在 4–6%，然后直接跳到 64%。现在每个阶段都有单调递增的"爬坡"计时器，每秒重写一次进度记录（`phaseCreepPercent`，已导出并单测），npm/tarball 的真实计数只把下限往上抬。里程碑整体重排（`下载 10→55`、`停止服务 58`、`安装 62→78`、`校验 84→87`、`同步声明 88`、`重启 92→95`、`健康检查 96`、`等待恢复 97–98`、`完成 100`），任何阶段都不再瞬移；启动服务的 30 秒与重启观察期间同样持续刷新进度。
   - **重启改为"继续观察"而不是直接判失败**（#18）：安装、完整性校验、版本声明同步都成功之后，重启失败不再终止更新。worker 进入 `restart-pending` 状态持续刷新进度，重新探测端口并按需重新拉起启动器，最长等待 `DSH_UC_RESTART_WINDOW_MS`（默认 150000 毫秒），之后才以 `E_RESTART` 结束——记录里带 `installed`、`restartPending: true`，文案明确"安装本身已成功"。期间端口起来即判定成功。
@@ -93,12 +104,6 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 
 - **v1.4.22** — 版本管理器 shim 解析（issue #17）：
   - `resolveNodeExe()` 通过 shim 执行 `node -p process.execPath` 反查真实 Node，`getNpmCli()` 不再回退到不存在的路径，而是抛出带 `DSH_UC_NODE_EXE` 提示的 `ENPMCLI`，避免 npm 阶段出现 `MODULE_NOT_FOUND`。
-
-- **v1.4.21** — 跨 npm -g 嵌套布局的主程序更新（#16）+ 外部守护进程 / 文件占用恢复（#15）+ 错误部署根提前拦截（#14）：
-  - **npm -g 嵌套布局校验**（#16）：`verifyTree`/`verifyDeployTree` 现在按真实位置定位 `dsh-web-frontend`——顶层或嵌套在 `dsh/node_modules/@deepseek-ai`——而不再只看顶层，全局安装不再以 `integrity check failed: dsh-web-frontend dist/index.html unreadable` 回滚。
-  - **外部守护 / EBUSY 恢复**（#15）：停止服务后重新探测端口并补杀可能被外部看护进程拉起的监听者；每次安装前都确保服务已停；安装遇到文件占用（`EBUSY`/`EPERM`/…）或端口被重新占用时最多重试 3 次而不是静默死亡，并始终把 `running:false` + 错误写入进度，让网页端能看到失败原因。
-  - **错误部署根提前拦截**（#14）：更新路由在动手前先校验解析出的部署根确实包含 `dsh-web-frontend`（顶层或嵌套），否则以 `E_LAYOUT` 快速失败，而不是装到错误位置后再回滚。
-  - **stale-lockfile 检测加固**：`readLockedDshVersion` 同时检查 `node_modules/.package-lock.json`，并把重置逻辑抽成可单测单元，确保"lockfile 声明了目标但物理树滞后"的错位被可靠清除。
 
 ## 开发
 
