@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 const WORKER = new URL(process.env.DSH_TEST_WORKER || "./main-update-worker.mjs", import.meta.url);
 const source = await readFile(WORKER, "utf8");
 
-const lines = source.split("\n");
+const lines = source.split(/\r?\n/);
 const startIdx = lines.findIndex((l) => l.startsWith("async function syncProfilesToDeploy()"));
 assert.ok(startIdx >= 0, "在 worker 中找不到 syncProfilesToDeploy");
 let endIdx = -1;
