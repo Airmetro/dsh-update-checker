@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pathToFileURL } from 'node:url';
 
 let root;
 let worker;
@@ -29,7 +28,7 @@ test.before(async () => {
   process.env.DSH_UC_UPDATE_OPS = join(root, 'ops.log');
   process.env.DSH_UC_UPDATE_DSH_HOME = root;
   process.env.DSH_UC_UPDATE_NO_RUN = '1';
-  worker = await import(pathToFileURL('D:\\AI办公\\dsh-update-checker\\scripts\\main-update-worker.mjs').href);
+  worker = await import('./main-update-worker.mjs');
 });
 
 test.after(async () => {
