@@ -260,10 +260,72 @@ test("场景7：非 harness profile 只建链接，不写 dependencies", async (
 
     assert.ok(
       await isLinkedTo(join(plain, "node_modules", SELF), s.pluginDir),
-      "没有 dsh.profile 的目录同样需要链接才能解析"
+      "没有 dsh 标记的目录同样需要链接才能解析"
     );
     const after = await readJson(join(plain, "package.json"));
     assert.deepEqual(after.dependencies, undefined, "不应擅自给非 harness 目录加依赖");
+  } finally {
+    await rm(s.base, { recursive: true, force: true });
+  }
+});
+
+test("场景7b：声明在 devDependencies 时不重复写入 dependencies", async () => {
+  const s = await scaffold();
+  try {
+    
+    
+    const manifestPath = join(s.profilesRoot, "web", "package.json");
+    const pkg = await readJson(manifestPath);
+    pkg.devDependencies = { [SELF]: "^1.6.0" };
+    await writeFile(manifestPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
+
+    const report = await s.mod.ensurePluginMount();
+
+    const after = await readJson(manifestPath);
+    assert.equal(after.devDependencies[SELF], "^1.6.0", "devDependencies 里的声明必须原样保留");
+    assert.deepEqual(
+      after.dependencies,
+      {},
+      "不得因为只看 dependencies 而写入第二条重复声明"
+    );
+    const entry = report.profiles.find((p) => p.profile === "web");
+    assert.equal(entry.declared, true);
+    assert.equal(entry.section, "devDependencies", "应报告实际生效的依赖段");
+  } finally {
+    await rm(s.base, { recursive: true, force: true });
+  }
+});
+
+test("场景7c：只有 dsh 键（无 dsh.profile）的清单也算 harness profile", async () => {
+  const s = await scaffold();
+  try {
+    const odd = join(s.profilesRoot, "odd");
+    await mkdir(odd, { recursive: true });
+    
+    
+    await writeFile(
+      join(odd, "package.json"),
+      JSON.stringify({ name: "dsh-profile-odd", private: true, dependencies: {}, dsh: { profile: { patchReload: "live" } } }),
+      "utf8"
+    );
+    const noProfileKey = join(s.profilesRoot, "nokey");
+    await mkdir(noProfileKey, { recursive: true });
+    await writeFile(
+      join(noProfileKey, "package.json"),
+      JSON.stringify({ name: "dsh-profile-nokey", private: true, dependencies: {}, dsh: { bundles: [] } }),
+      "utf8"
+    );
+
+    await s.mod.ensurePluginMount();
+
+    for (const name of ["odd", "nokey"]) {
+      const pkg = await readJson(join(s.profilesRoot, name, "package.json"));
+      assert.equal(
+        pkg.dependencies[SELF],
+        "^1.6.0",
+        `${name}：带 dsh 键的清单应被写入依赖，否则插件会被认成"永远需要更新"`
+      );
+    }
   } finally {
     await rm(s.base, { recursive: true, force: true });
   }
@@ -322,6 +384,57 @@ test("场景9：runSync 写链接而非实体副本（profile 侧 @deepseek-ai �
         `${n} 在 profile 侧必须是链接——实体目录会让 dsh 的 ensureSymlink 在服务绑定端口前抛错`
       );
     }
+  } finally {
+    await rm(s.base, { recursive: true, force: true });
+  }
+});
+
+test("场景11：GET mount.json 只读；真正的重挂载走带写闸门的 POST /mount", async () => {
+  const s = await scaffold();
+  try {
+    const src = await readFile(new URL("../lib/index.js", import.meta.url), "utf8");
+    const start = src.indexOf('path: "/dsh-update-checker/mount.json"');
+    const post = src.indexOf('path: "/dsh-update-checker/mount"');
+    assert.ok(start > 0, "应存在 mount.json 路由");
+    assert.ok(post > start, "应存在 POST /mount 路由");
+
+    
+    
+    const getBlock = src.slice(start, post);
+    assert.ok(
+      !/ensurePluginMount\(\)/.test(getBlock),
+      "GET mount.json 不得调用 ensurePluginMount——它会在无写闸门、无回环校验的情况下改磁盘"
+    );
+    assert.ok(/lastMountReport/.test(getBlock), "GET 应只返回最近一次挂载结果");
+
+    
+    
+    const postBlock = src.slice(post, post + 900);
+    assert.ok(
+      /writeGate\(req, res\)/.test(postBlock),
+      "POST /mount 必须过 writeGate（confirm + 回环来源），与其它写路由一致"
+    );
+    assert.ok(/ensurePluginMount\(\)/.test(postBlock), "POST /mount 才是执行重挂载的入口");
+  } finally {
+    await rm(s.base, { recursive: true, force: true });
+  }
+});
+
+test("场景12：挂载已正确时，重挂载不产生任何写入（幂等且静默）", async () => {
+  const s = await scaffold();
+  try {
+    await s.mod.ensurePluginMount();
+    const manifestPath = join(s.profilesRoot, "web", "package.json");
+    const before = await readFile(manifestPath, "utf8");
+    const linkBefore = await lstat(join(s.profilesRoot, "web", "node_modules", SELF)).catch(() => null);
+
+    const second = await s.mod.ensurePluginMount();
+
+    assert.equal(await readFile(manifestPath, "utf8"), before, "package.json 不应被重写");
+    const linkAfter = await lstat(join(s.profilesRoot, "web", "node_modules", SELF));
+    assert.equal(linkAfter.ino, linkBefore.ino, "链接不应被重建");
+    assert.equal(second.ok, true);
+    assert.deepEqual(second.errors, []);
   } finally {
     await rm(s.base, { recursive: true, force: true });
   }

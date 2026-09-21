@@ -66,7 +66,7 @@ New-Item -ItemType Junction `
   -Target "$env:USERPROFILE\.dsh\profiles\node_modules\dsh-update-checker"
 
 # 2b) declare the dependency in the profile manifest
-#     $DSH_HOME/profiles/web/package.json → "dependencies": { "dsh-update-checker": "^1.6.0" }
+#     $DSH_HOME/profiles/web/package.json → "dependencies": { "dsh-update-checker": "^1.6.1" }
 ```
 
 A **junction is required rather than a copy**: the link's real path must stay
@@ -76,13 +76,20 @@ The declaration is what dsh's `readProfilePlugins` and this plugin's own
 `findDeclaringProfiles`/`persistPluginUpdate` read to decide which profile owns the plugin —
 without it the plugin reports itself as permanently outdated.
 
-**You normally do not have to do this by hand.** From v1.6.0 the plugin re-establishes its own
-mount at startup (`ensurePluginMount`): it creates or repairs the link in every profile and
-writes the declaration into every harness profile, is idempotent, never overwrites a `link:`/
-`file:` spec you set deliberately, and never deletes a directory it cannot prove is its own
-copy. `GET /dsh-update-checker/mount.json` reports the state on demand, and `status.json`
-carries it as `mount`. Do step 2 by hand when you install offline, or when you want the profile
-correct *before* the first launch after installing.
+**Step 2 is not optional on a fresh install.** A profile that cannot resolve the plugin dies in
+`composeProfile` — *before* the plugin is loaded — so no code inside the plugin can repair that
+first launch. Do 2a and 2b by hand when you install (or when you add a second profile), and the
+profile comes up.
+
+**After that first successful launch the plugin maintains the mount itself.** From v1.6.0 it
+re-runs `ensurePluginMount` at startup, after each plugin update and after each plugin rollback:
+it creates or repairs the link in every profile and writes the declaration into every harness
+profile, is idempotent, never overwrites a `link:`/`file:` spec you set deliberately, and never
+deletes a directory it cannot prove is its own copy. So a later `dsh` upgrade, a new profile
+(same machine), a dropped link or a changed version are all repaired without hand-editing again.
+Read the state any time at `GET /dsh-update-checker/mount.json` (read-only); it is also carried in
+`status.json` as `mount`. `POST /dsh-update-checker/mount` forces a re-check (needs
+`{ "confirm": true }` + loopback, like every other write route).
 
 Then let patch HMR apply it (or restart `dsh web`) and reload the page.
 
@@ -117,6 +124,29 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - Before `npm install`, a backup (deployment `package.json` + `package-lock.json` + both @deepseek-ai version manifests + `backup-meta.json` + a `main-snapshot` copy of the `@deepseek-ai` framework tree) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/`; both main-program and plugin rollback routes are provided, and main-program rollback restores from the `main-snapshot` when present instead of re-installing from the registry.
 
 ## Changelog
+
+- **v1.6.1** — hardening and honesty fixes on top of v1.6.0:
+  - **`GET /mount.json` no longer writes.** It called `ensurePluginMount()` on a plain GET — creating
+    junctions, `mkdir`s and rewriting `profiles/*/package.json` — with no `writeGate` and no loopback
+    check, unlike every other mutating route. It is now read-only (returns the last report, `202`
+    while the startup check is still running), and the re-check moved to `POST /mount` behind the same
+    `{ "confirm": true }` + loopback gate as every other write route.
+  - **The mount is re-verified after a plugin update and after a plugin rollback.** Previously it was
+    only checked at startup, so a swapped-in plugin version left the mount unverified until the next
+    `dsh` start. `finalizePluginInstall` and `rollbackPlugin` now re-run it and return the result as
+    `mount` in their response payloads.
+  - **A declaration in `devDependencies` is respected.** The declaration step read and wrote
+    `dependencies` only, while the package's own `declaredSection` prefers `devDependencies` — so a
+    profile declaring the plugin as a dev dependency got a second, duplicate entry. The section is now
+    the profile's actual one, and the report names it (`section`).
+  - **Harness-profile detection widened** from `pkg.dsh.profile` to `pkg.dsh`, so a valid manifest
+    without that sub-object still receives its declaration instead of only a link (which would have
+    left it reporting itself as permanently outdated).
+  - **Docs state the real limitation.** The self-mount runs inside the plugin, i.e. only after a
+    profile composed successfully — so it cannot repair the very first launch that fails to resolve
+    the plugin. The manual link + declaration is **required for a fresh install** (and for each new
+    profile); self-maintenance covers everything after that. Earlier wording implied a restart could
+    heal the broken case, which is exactly the case it cannot.
 
 - **v1.6.0** — the plugin mounts itself, so `dsh` `0.1.6-alpha.2` stops failing to load it:
   - **Root cause**: `0.1.6-alpha.2` changed the profile resolution default from

@@ -68,7 +68,7 @@ New-Item -ItemType Junction `
   -Target "$env:USERPROFILE\.dsh\profiles\node_modules\dsh-update-checker"
 
 # 2b) 在 profile 清单里声明依赖
-#     $DSH_HOME/profiles/web/package.json → "dependencies": { "dsh-update-checker": "^1.6.0" }
+#     $DSH_HOME/profiles/web/package.json → "dependencies": { "dsh-update-checker": "^1.6.1" }
 ```
 
 **必须是 junction 而不是副本**：链接的 realpath 必须仍落在 `…/profiles/node_modules/…`，
@@ -77,11 +77,16 @@ New-Item -ItemType Junction `
 `findDeclaringProfiles`/`persistPluginUpdate` 判定"这个插件归哪个 profile"的依据——缺了它，
 插件会一直把自己报成"需要更新"。
 
-**通常不必手工做这两步。** 自 v1.6.0 起插件会在启动时自行（重新）建立挂载
-（`ensurePluginMount`）：为每个 profile 创建或修复链接，为每个 harness profile 写入依赖声明；
-该操作幂等，绝不覆盖你刻意设置的 `link:`/`file:` 规格，也绝不删除无法证明是自己副本的目录。
-`GET /dsh-update-checker/mount.json` 可随时查看状态，`status.json` 里也会带 `mount` 字段。
-只有在离线安装、或希望"首次启动前 profile 就已正确"时，才需要手工执行第 2 步。
+**全新安装时第 2 步不是可选项。** 解析不到插件的 profile 会在 `composeProfile` 阶段就崩掉——
+**在插件被加载之前**——所以插件内部任何代码都救不了那一次启动。安装时（或新增第二个 profile 时）
+请手工执行 2a 与 2b，profile 即可起来。
+
+**首次成功启动之后，挂载由插件自己维护。** 自 v1.6.0 起，它会在启动时、每次插件更新后、每次插件
+回滚后重跑 `ensurePluginMount`：为每个 profile 创建或修复链接，为每个 harness profile 写入依赖
+声明；幂等，绝不覆盖你刻意设置的 `link:`/`file:` 规格，也绝不删除无法证明是自己副本的目录。
+因此后续的 dsh 升级、新加 profile（同一台机器）、链接丢失、版本变化都不必再手工编辑。
+随时可用 `GET /dsh-update-checker/mount.json`（只读）查看状态，`status.json` 里也带 `mount` 字段；
+`POST /dsh-update-checker/mount` 可强制复查（与其它写路由一样需要 `{ "confirm": true }` + 回环来源）。
 
 然后让 patch HMR 生效（或重启 `dsh web`）并刷新页面。
 
@@ -116,6 +121,23 @@ New-Item -ItemType Junction `
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package.json` + `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json` + `main-snapshot` 里 `@deepseek-ai` 框架整树副本），主程序与插件都有对应回滚路由；主程序回滚在 `main-snapshot` 存在时直接从磁盘恢复，而不是从 registry 重新安装旧版本。
 
 ## 更新日志
+
+- **v1.6.1** — 在 v1.6.0 基础上做加固与"说实话"的修正：
+  - **`GET /mount.json` 不再写盘。** 它原本在一个普通 GET 里调用 `ensurePluginMount()`——建 junction、
+    `mkdir`、改写 `profiles/*/package.json`——却既无 `writeGate` 也无回环来源校验，与其它所有写路由
+    不一致。现在它是只读的（返回最近一次结果；启动时的检查尚未完成则返回 `202`），真正的重挂载移到
+    `POST /mount`，与其它写路由一样需要 `{ "confirm": true }` + 回环来源。
+  - **插件更新后、插件回滚后都会重新校验挂载。** 此前只在启动时检查一次，于是换入新版本之后挂载状态
+    要到下次 `dsh` 启动才被验证。现在 `finalizePluginInstall` 与 `rollbackPlugin` 都会重跑，并把结果
+    作为 `mount` 一并返回。
+  - **尊重写在 `devDependencies` 里的声明。** 原先声明步骤只读写 `dependencies`，而本包自己的
+    `declaredSection` 是优先 `devDependencies` 的——于是把插件声明为 dev 依赖的 profile 会被塞进第二条
+    重复声明。现在按 profile 实际所在的依赖段处理，并在报告里以 `section` 说明。
+  - **harness profile 的判定放宽**：由 `pkg.dsh.profile` 改为 `pkg.dsh`，于是缺少该子对象但合法的清单
+    也会被写入依赖声明，而不是只建链接（只建链接会让它一直把自己报成需要更新）。
+  - **文档写明真实限制。** 自挂载逻辑运行在插件内部，也就是只在 profile 组合成功之后才会执行——因此它
+    **无法**修复"首次启动就解析不到插件"那一次。全新安装（以及每新增一个 profile）**必须**手工建链接 +
+    写声明；此后的维护才由插件自己负责。此前的措辞暗示"重启一次可自行修复"，而那恰恰是它修不了的情形。
 
 - **v1.6.0** — 插件自行挂载，dsh `0.1.6-alpha.2` 不再加载失败：
   - **根因**：`0.1.6-alpha.2` 把 profile 解析默认值从 `options.resolutionMode ?? "link"` 改成 `?? "runtime"`。于是 `PluginPackages` 收到的配置由 `{}` 变为 `{ generation, behavior: "enforce" }`，`routeScoped` 把 `$DSH_HOME/profiles/node_modules` 登记为**受管共享目录**并在遍历搜索路径时直接 `break` 掉，不再检索。该目录从此只能服务"解析代"表里的条目——部署依赖闭包与被选中的 bundle 闭包——而第三方插件两者皆不属于，于是解析落到 `after-fallback`、以 `$DSH_HOME/package.json` 为基准，最终 `ERR_MODULE_NOT_FOUND`，且发生在 **Web 服务绑定端口之前**。dsh 还会把报错里的 importer 路径改写成 profile 目录，所以看起来像"包就在旁边却说找不到"。

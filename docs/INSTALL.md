@@ -48,15 +48,20 @@ New-Item -ItemType Junction `
   "name": "dsh-profile-web",
   "private": true,
   "dependencies": {
-    "dsh-update-checker": "^1.6.0"   // ← 加这一行
+    "dsh-update-checker": "^1.6.1"   // ← 加这一行
   },
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } }
 }
 ```
 
-> 💡 **v1.6.0 起插件会自己做这件事**：启动时 `ensurePluginMount()` 会为每个 profile 建/修链接并补写依赖声明。
-> 上面的手工步骤用于离线安装，或希望首次启动前 profile 就已正确的情形。可用
-> `http://127.0.0.1:3080/dsh-update-checker/mount.json` 查看挂载状态。
+> ⚠️ **首次安装时这一步必做，不能省。** 解析不到插件的 profile 会在 `composeProfile` 阶段直接崩掉——
+> 那时插件还没有被加载，所以插件自己**救不了这一次启动**。手工做完 2a + 2b，profile 就能起来。
+>
+> 💡 首次成功启动之后，挂载就交给插件自己维护：v1.6.0 起它会在启动时、每次插件更新后、每次插件回滚后
+> 重跑 `ensurePluginMount()`，为每个 profile 建/修链接并补写依赖声明（幂等，且绝不覆盖你刻意设置的
+> `link:`/`file:`）。新增 profile、链接丢失、dsh 升级后都不必再手工编辑。
+> 状态查看：`GET http://127.0.0.1:3080/dsh-update-checker/mount.json`（只读）；
+> 强制复查：`POST .../dsh-update-checker/mount`（需 `{"confirm":true}` + 回环来源）。
 
 ## 第二步：挂载组合行
 
@@ -86,8 +91,10 @@ dsh `0.1.6-alpha.2` 之后的解析模式变化所致，见「第一步半」。
 真实失败基准是 `$DSH_HOME/package.json`，所以"包明明就在旁边却说找不到"是正常现象，不要顺着报错去改。
 
 处置：确认 `profiles\web\node_modules\dsh-update-checker` 存在且是链接
-（`Get-Item -Force <路径> | Select LinkType,Target`），并确认 `profiles\web\package.json` 的
-`dependencies` 里已声明本插件；缺哪个补哪个，或直接重启一次让插件自行修复。
+（`Get-Item -Force <路径> | Select LinkType,Target`），并确认 `profiles\web\package.json` 里已声明本插件
+（写在 `dependencies` 或 `devDependencies` 均可）。缺哪个补哪个——**这时不能靠"重启让插件自行修复"**，
+因为插件正是在这一步加载失败、根本没机会运行（见「第一步半」的警告）。修好后首次成功启动，
+之后的维护就交给插件自己了。
 
 ### 1. 重启时报 `taskkill` / `cmd` "not recognized"
 本机 PATH 损坏所致。插件内部已用全路径调用 System32 工具，正常无需处理；只有手动跑 `scripts/restart-service.ps1` 时才需带 `-ExecutionPolicy Bypass`。
