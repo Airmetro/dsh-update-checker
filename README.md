@@ -16,10 +16,11 @@ A permanent Cordis plugin for the [DeepSeek Harness](https://github.com/deepseek
 - **Restart with watchdog** — launcher derived from the current process argv, kill by PID + port, recovery confirmed by port listening, an HTTP 200 probe (`GET /restart-status.json`) **and a new instance id** read back from this plugin's own routes, so "something answers on the port" is no longer mistaken for "the updated build came up".
 - **Write-route security** — all write routes require `{ "confirm": true }` **and** a loopback source (127.0.0.1/::1), so LAN clients can't trigger update/restart/rollback.
 - **Zero-config portability** — profile dir / composition file / deploy root are derived from the plugin's own install location, while state, backups and logs honour `DSH_HOME` (then `~/.dsh`); works on any machine without editing code.
+- **Self-mounting on `dsh` `0.1.6-alpha.2`+** — that release switched the profile resolution default from `"link"` to `"runtime"`, which stops a third-party plugin in `$DSH_HOME/profiles/node_modules` from resolving and kills the launch with `ERR_MODULE_NOT_FOUND` before the server binds. The plugin now re-establishes its own mount at startup (`ensurePluginMount`): a junction from every profile's `node_modules` to the real package, plus the `dependencies` declaration each profile needs so ownership is recognised. Idempotent, never overwrites a spec you set deliberately, never deletes a directory it cannot prove is its own copy; `mount.json` / `status.json` report the state.
 
 ### Host & Client
 
-- **Host** (`lib/index.js`) — HTTP routes: `status.json` (check), `suppress`, `update` (with `dry` preview), `rollback`, `backups.json`, `restart`, `restart-status.json`, `plugins.json`, `plugin-update`, `plugin-rollback`, `plugin-exclude`.
+- **Host** (`lib/index.js`) — HTTP routes: `status.json` (check), `mount.json` (self-mount state), `suppress`, `update` (with `dry` preview), `rollback`, `backups.json`, `restart`, `restart-status.json`, `plugins.json`, `plugin-update`, `plugin-rollback`, `plugin-exclude`.
 - **Client** (`lib/client.js`) — renders two banners in the root `shell.overlay` slot: a core banner (main-program update state) and a plugin banner (updatable plugins with single / update-all buttons). Both check on page load, then every 6 hours; the settings page ("检查更新") adds rollback buttons.
 
 ## Install & mount
@@ -44,6 +45,44 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
     - id: dsh-update-checker
       name: 'dsh-update-checker'
 ```
+
+### dsh `0.1.6-alpha.2` and later: the profile needs its own link
+
+Step 1 alone is **no longer enough**. `0.1.6-alpha.2` changed the profile module-resolution
+default from `"link"` to `"runtime"`, which turns `$DSH_HOME/profiles/node_modules` into a
+*shared managed* directory that dsh excludes from Node's native resolve. It now only serves the
+deployment dependency closure and the selected bundle closure (see `PluginPackages` /
+`routeScoped` in `@deepseek-ai/dsh-app-boot`), and a third-party plugin belongs to neither — so
+the bare `dsh-update-checker` name stops resolving and the launch dies with
+`ERR_MODULE_NOT_FOUND: Cannot find package 'dsh-update-checker' imported from …\profiles\web\`
+before the web server binds. (That importer path is *rewritten* by dsh to point at the profile
+directory; the real failing base is `$DSH_HOME/package.json`. Do not trust the path in the
+message.) Two things fix it, and both are needed:
+
+```powershell
+# 2a) link the profile's node_modules at the real package (junction, never a copy)
+New-Item -ItemType Junction `
+  -Path   "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-update-checker" `
+  -Target "$env:USERPROFILE\.dsh\profiles\node_modules\dsh-update-checker"
+
+# 2b) declare the dependency in the profile manifest
+#     $DSH_HOME/profiles/web/package.json → "dependencies": { "dsh-update-checker": "^1.6.0" }
+```
+
+A **junction is required rather than a copy**: the link's real path must stay
+`…/profiles/node_modules/…`, or `pickDshHome` can no longer recognise the Harness home and the
+plugin's self-location drifts (which would send its `@deepseek-ai/*` sync to the wrong place).
+The declaration is what dsh's `readProfilePlugins` and this plugin's own
+`findDeclaringProfiles`/`persistPluginUpdate` read to decide which profile owns the plugin —
+without it the plugin reports itself as permanently outdated.
+
+**You normally do not have to do this by hand.** From v1.6.0 the plugin re-establishes its own
+mount at startup (`ensurePluginMount`): it creates or repairs the link in every profile and
+writes the declaration into every harness profile, is idempotent, never overwrites a `link:`/
+`file:` spec you set deliberately, and never deletes a directory it cannot prove is its own
+copy. `GET /dsh-update-checker/mount.json` reports the state on demand, and `status.json`
+carries it as `mount`. Do step 2 by hand when you install offline, or when you want the profile
+correct *before* the first launch after installing.
 
 Then let patch HMR apply it (or restart `dsh web`) and reload the page.
 
@@ -78,6 +117,53 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - Before `npm install`, a backup (deployment `package.json` + `package-lock.json` + both @deepseek-ai version manifests + `backup-meta.json` + a `main-snapshot` copy of the `@deepseek-ai` framework tree) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/`; both main-program and plugin rollback routes are provided, and main-program rollback restores from the `main-snapshot` when present instead of re-installing from the registry.
 
 ## Changelog
+
+- **v1.6.0** — the plugin mounts itself, so `dsh` `0.1.6-alpha.2` stops failing to load it:
+  - **Root cause**: `0.1.6-alpha.2` changed the profile resolution default from
+    `options.resolutionMode ?? "link"` to `?? "runtime"`. `PluginPackages` then receives
+    `{ generation, behavior: "enforce" }` instead of `{}`, and `routeScoped` registers
+    `$DSH_HOME/profiles/node_modules` as a *shared managed* directory that it `break`s out of
+    rather than searching. That directory can now only serve the entries in the resolution
+    generation — the deployment dependency closure and the selected bundle closure — and a
+    third-party plugin is in neither, so the lookup falls through to `after-fallback` with
+    `$DSH_HOME/package.json` as the base and dies at `ERR_MODULE_NOT_FOUND`, **before the web
+    server binds**. dsh rewrites the importer path in that error to point at the profile
+    directory, so it reads as "the package next door cannot be found".
+  - **Fix — the plugin now ensures its own mount** (`ensurePluginMount`, run at startup and
+    exposed at `GET /dsh-update-checker/mount.json`, with the result also carried in
+    `status.json` as `mount`): for every profile it creates/repairs
+    `profiles/<profile>/node_modules/dsh-update-checker` as a **junction** to the real package in
+    `profiles/node_modules`, and writes the `dependencies` declaration into every harness
+    profile. Both halves are needed: the link is what makes `routeScoped` find a candidate
+    *before* the shared directory (the documented "pnpm-managed entries in the profile's
+    `node_modules` resolve first"), and the declaration is what `readProfilePlugins` and this
+    plugin's own `findDeclaringProfiles`/`persistPluginUpdate` use to decide ownership —
+    without it the plugin reports itself as permanently outdated. A junction, never a copy: a
+    copy would put `import.meta.url` under `profiles/<profile>/node_modules`, where
+    `pickDshHome` no longer recognises the Harness home, drifting the plugin's self-location
+    and its `@deepseek-ai/*` sync target. Correct under `"link"` mode too — no route hook is
+    installed there and native resolution reaches the same link — so this is not a
+    version-conditional hack.
+  - **Safe by construction**: idempotent; an existing declaration is never overwritten (a
+    `file:`/`link:` spec you set deliberately is preserved and reported as `foreignDecl`); a
+    real directory is reclaimed only when its `package.json` `name` proves it is this plugin's
+    own copy; anything else is reported as `refusing to replace` and left untouched; writes go
+    to harness profiles only, and a plugin installed outside `profiles/node_modules` (npm `-g`,
+    deployment root) skips cleanly.
+  - **`runSync` no longer leaves real directories in the profile**: the main-program sync in
+    `lib/index.js` still called `cp(src, dst, { recursive: true, force: true })` for the
+    `@deepseek-ai/*` framework tree, the same write path v1.5.0 fixed in the update worker —
+    and the same one that makes `healProfilesModuleFallback`/`ensureSymlink` throw
+    `exists and is not a symlink or dsh-managed module proxy` at the next launch. It now
+    creates a junction (Windows) / directory symlink (POSIX) through the same
+    verified-reclaim logic, so the two sync paths can no longer disagree.
+  - **Regression tests**: `scripts/integration-plugin-mount.test.mjs` drives the real exported
+    functions against a temporary Harness home and covers ten scenarios — a missing link is
+    created (and its real path stays under `profiles/node_modules`), a leftover real copy is
+    reclaimed, a correct link is left byte-identical, a same-named foreign directory is never
+    deleted, a dangling link is rebuilt, an existing/foreign declaration is preserved, a
+    non-harness profile gets a link but no declaration, an out-of-tree install is a no-op, and
+    `runSync` writes links while still refusing to replace foreign packages.
 
 - **v1.5.0** — `syncProfilesToDeploy` links instead of copying (fixes the crash that followed a main-program update):
   - **Root cause**: the function's name and its `junctionSkipped` log field promised linking, but the write path never created a link — it called `cp(src, dst, { recursive: true, force: true })`. Entries already present and resolving to the same real path were skipped (228 of 236 on a real host), while packages **not yet present in the profile** — the 8 new ones a `0.1.6-alpha.1` update brings — were copied as **real directories** into `$DSH_HOME/profiles/node_modules/@deepseek-ai/`.

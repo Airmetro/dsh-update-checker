@@ -28,6 +28,36 @@ cp -r "$TEMP/duc-tmp/node_modules/dsh-update-checker" "$DSH_HOME/profiles/node_m
 
 从 GitHub 下载源码 zip 或从 npm 拉 tarball，解压后把 `dsh-update-checker/` 整个目录拷到 `$DSH_HOME/profiles/node_modules/dsh-update-checker/`。
 
+## 第一步半：给 profile 建链接 + 声明依赖（dsh `0.1.6-alpha.2` 起必须）
+
+> 只做第一步在 `0.1.6-alpha.2` 上**会启动失败**：
+> `ERR_MODULE_NOT_FOUND: Cannot find package 'dsh-update-checker' imported from …\profiles\web\`
+> 该版本把 profile 默认解析模式由 `link` 改为 `runtime`，`profiles/node_modules` 从此只服务部署依赖闭包，
+> 第三方插件必须挂在 profile 自己的 `node_modules` 下才能被解析。
+
+```powershell
+# 1) 链接（junction，不要用拷贝）
+New-Item -ItemType Junction `
+  -Path   "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-update-checker" `
+  -Target "$env:USERPROFILE\.dsh\profiles\node_modules\dsh-update-checker"
+```
+
+```jsonc
+// 2) $DSH_HOME/profiles/web/package.json
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {
+    "dsh-update-checker": "^1.6.0"   // ← 加这一行
+  },
+  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } }
+}
+```
+
+> 💡 **v1.6.0 起插件会自己做这件事**：启动时 `ensurePluginMount()` 会为每个 profile 建/修链接并补写依赖声明。
+> 上面的手工步骤用于离线安装，或希望首次启动前 profile 就已正确的情形。可用
+> `http://127.0.0.1:3080/dsh-update-checker/mount.json` 查看挂载状态。
+
 ## 第二步：挂载组合行
 
 编辑 `$DSH_HOME/profiles/web/cordis.patch.yml`，加入：
@@ -46,8 +76,18 @@ cp -r "$TEMP/duc-tmp/node_modules/dsh-update-checker" "$DSH_HOME/profiles/node_m
 
 - 打开 DSH Web GUI：顶部会出现主程序更新横幅（有更新时）或"已是最新"提示；设置里出现"检查更新"入口
 - 浏览器访问 `http://127.0.0.1:3080/dsh-update-checker/status.json`，应返回 JSON（含 `latest` / `installed` / `hasUpdate`）
+- 访问 `http://127.0.0.1:3080/dsh-update-checker/mount.json`，应返回 `ok: true` 且每个 profile 的 `linked` / `declared` 均为 `true`
 
 ## 常见问题
+
+### 0. 启动即崩：`Cannot find package 'dsh-update-checker' imported from …\profiles\web\`
+
+dsh `0.1.6-alpha.2` 之后的解析模式变化所致，见「第一步半」。注意**报错里的路径是 dsh 改写过的**，
+真实失败基准是 `$DSH_HOME/package.json`，所以"包明明就在旁边却说找不到"是正常现象，不要顺着报错去改。
+
+处置：确认 `profiles\web\node_modules\dsh-update-checker` 存在且是链接
+（`Get-Item -Force <路径> | Select LinkType,Target`），并确认 `profiles\web\package.json` 的
+`dependencies` 里已声明本插件；缺哪个补哪个，或直接重启一次让插件自行修复。
 
 ### 1. 重启时报 `taskkill` / `cmd` "not recognized"
 本机 PATH 损坏所致。插件内部已用全路径调用 System32 工具，正常无需处理；只有手动跑 `scripts/restart-service.ps1` 时才需带 `-ExecutionPolicy Bypass`。

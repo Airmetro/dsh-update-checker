@@ -16,10 +16,11 @@
 - **看门狗重启** — 启动器从当前进程 argv 派生，杀 PID + 端口双保险；恢复确认 = 端口监听 + HTTP 200 探测（`GET /restart-status.json`）+ **从插件自身路由读回的实例 id**，"端口有人应答"不再被当成"新版本已经起来"。
 - **写操作安全** — 所有写路由除 `{ "confirm": true }` 外还要求回环来源（127.0.0.1/::1），局域网客户端无法远程触发更新/重启/回滚。
 - **零配置可移植** — profile 目录 / 组合文件 / 部署根由插件自身安装位置自动推导；状态、备份与日志遵循 `DSH_HOME`（再退回 `~/.dsh`）。任何机器无需改代码。
+- **自挂载（适配 dsh `0.1.6-alpha.2`+）** — 该版本把 profile 默认解析模式由 `"link"` 改为 `"runtime"`，于是放在 `$DSH_HOME/profiles/node_modules` 的第三方插件不再被解析，启动在服务绑定端口之前就以 `ERR_MODULE_NOT_FOUND` 崩掉。插件现在会在启动时自行重建挂载（`ensurePluginMount`）：为每个 profile 的 `node_modules` 建一份指向真实包的 junction，并补上各 profile 判定归属所需的 `dependencies` 声明。幂等、绝不覆盖你刻意设置的规格、绝不删除无法证明是自己副本的目录；`mount.json` / `status.json` 可查看状态。
 
 ### Host 与 Client
 
-- **Host**（`lib/index.js`）— HTTP 路由：`status.json`（检查）、`suppress`、`update`（支持 `dry` 预览）、`rollback`、`backups.json`、`restart`、`restart-status.json`、`plugins.json`、`plugin-update`、`plugin-rollback`、`plugin-exclude`。
+- **Host**（`lib/index.js`）— HTTP 路由：`status.json`（检查）、`mount.json`（自挂载状态）、`suppress`、`update`（支持 `dry` 预览）、`rollback`、`backups.json`、`restart`、`restart-status.json`、`plugins.json`、`plugin-update`、`plugin-rollback`、`plugin-exclude`。
 - **Client**（`lib/client.js`）— 在根级 `shell.overlay` 插槽渲染两个横幅：主程序横幅（更新状态）与插件横幅（可更新插件，支持单个 / 全部更新）。页面加载时各检查一次，之后每 6 小时复查；设置页「检查更新」另提供回滚按钮。
 
 ## 安装与装载
@@ -44,6 +45,43 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
     - id: dsh-update-checker
       name: 'dsh-update-checker'
 ```
+
+### dsh `0.1.6-alpha.2` 之后：profile 还必须有自己的一份链接
+
+只做第 1 步**已经不够了**。`0.1.6-alpha.2` 把 profile 的默认模块解析模式从 `"link"` 改成
+`"runtime"`，于是 `$DSH_HOME/profiles/node_modules` 变成 dsh **受管的共享目录**，被排除在
+Node 原生解析之外——它现在只服务部署依赖闭包与被选中的 bundle 闭包（见
+`@deepseek-ai/dsh-app-boot` 的 `PluginPackages` / `routeScoped`），而第三方插件两者都不属于。
+结果就是 profile 里那句裸包名 `dsh-update-checker` 解析不到，启动在 Web 服务绑定端口之前就崩：
+
+```
+ERR_MODULE_NOT_FOUND: Cannot find package 'dsh-update-checker' imported from …\profiles\web\
+```
+
+（这条报错里的 importer 路径是 dsh **改写**过的，真实失败基准是 `$DSH_HOME/package.json`，
+不要相信报错里的那个目录。）修法是两件事，缺一不可：
+
+```powershell
+# 2a) 给 profile 的 node_modules 建一份指向真实包的链接（junction，绝不能用副本）
+New-Item -ItemType Junction `
+  -Path   "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-update-checker" `
+  -Target "$env:USERPROFILE\.dsh\profiles\node_modules\dsh-update-checker"
+
+# 2b) 在 profile 清单里声明依赖
+#     $DSH_HOME/profiles/web/package.json → "dependencies": { "dsh-update-checker": "^1.6.0" }
+```
+
+**必须是 junction 而不是副本**：链接的 realpath 必须仍落在 `…/profiles/node_modules/…`，
+否则 `pickDshHome` 认不出 Harness home，插件的自我定位会漂移（连带把 `@deepseek-ai/*`
+同步写到错误位置）。而依赖声明是 dsh 的 `readProfilePlugins` 与本插件自己的
+`findDeclaringProfiles`/`persistPluginUpdate` 判定"这个插件归哪个 profile"的依据——缺了它，
+插件会一直把自己报成"需要更新"。
+
+**通常不必手工做这两步。** 自 v1.6.0 起插件会在启动时自行（重新）建立挂载
+（`ensurePluginMount`）：为每个 profile 创建或修复链接，为每个 harness profile 写入依赖声明；
+该操作幂等，绝不覆盖你刻意设置的 `link:`/`file:` 规格，也绝不删除无法证明是自己副本的目录。
+`GET /dsh-update-checker/mount.json` 可随时查看状态，`status.json` 里也会带 `mount` 字段。
+只有在离线安装、或希望"首次启动前 profile 就已正确"时，才需要手工执行第 2 步。
 
 然后让 patch HMR 生效（或重启 `dsh web`）并刷新页面。
 
@@ -78,6 +116,13 @@ cp -r <temp-dir>/node_modules/dsh-update-checker $DSH_HOME/profiles/node_modules
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package.json` + `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json` + `main-snapshot` 里 `@deepseek-ai` 框架整树副本），主程序与插件都有对应回滚路由；主程序回滚在 `main-snapshot` 存在时直接从磁盘恢复，而不是从 registry 重新安装旧版本。
 
 ## 更新日志
+
+- **v1.6.0** — 插件自行挂载，dsh `0.1.6-alpha.2` 不再加载失败：
+  - **根因**：`0.1.6-alpha.2` 把 profile 解析默认值从 `options.resolutionMode ?? "link"` 改成 `?? "runtime"`。于是 `PluginPackages` 收到的配置由 `{}` 变为 `{ generation, behavior: "enforce" }`，`routeScoped` 把 `$DSH_HOME/profiles/node_modules` 登记为**受管共享目录**并在遍历搜索路径时直接 `break` 掉，不再检索。该目录从此只能服务"解析代"表里的条目——部署依赖闭包与被选中的 bundle 闭包——而第三方插件两者皆不属于，于是解析落到 `after-fallback`、以 `$DSH_HOME/package.json` 为基准，最终 `ERR_MODULE_NOT_FOUND`，且发生在 **Web 服务绑定端口之前**。dsh 还会把报错里的 importer 路径改写成 profile 目录，所以看起来像"包就在旁边却说找不到"。
+  - **修复——插件自我保证挂载**（`ensurePluginMount`，启动时执行，并暴露为 `GET /dsh-update-checker/mount.json`，结果同时作为 `mount` 字段出现在 `status.json`）：为每个 profile 创建/修复 `profiles/<profile>/node_modules/dsh-update-checker` → `profiles/node_modules` 下真实包的 **junction**，并为每个 harness profile 写入 `dependencies` 声明。两半都必需：链接让 `routeScoped` 在共享目录**之前**就命中候选（设计文档原文 "pnpm-managed entries in the profile's `node_modules` resolve first"），而声明是 dsh 的 `readProfilePlugins` 与本插件 `findDeclaringProfiles`/`persistPluginUpdate` 判定归属的依据——缺它插件会一直把自己报成需要更新。必须用 junction 而非副本：副本会让 `import.meta.url` 落到 `profiles/<profile>/node_modules`，`pickDshHome` 认不出 Harness home，自我定位漂移，`@deepseek-ai/*` 同步也会写错位置。在 `"link"` 模式下同样正确（该模式不装路由钩子，原生解析照样命中这份链接），因此不是"看版本下菜"的临时手段。
+  - **构造上安全**：幂等；已有声明绝不覆盖（你刻意设置的 `file:`/`link:` 会被保留并记为 `foreignDecl`）；实体目录只有在 `package.json` 的 `name` 能证明是本插件自己的副本时才回收；其余情况报告 `refusing to replace` 并原样留下；只写 harness profile；插件若装在 `profiles/node_modules` 之外（npm `-g`、部署根）则安全跳过。
+  - **`runSync` 不再往 profile 里写实体目录**：`lib/index.js` 中主程序同步对 `@deepseek-ai/*` 框架树仍在用 `cp(src, dst, { recursive: true, force: true })`——正是 v1.5.0 在更新 worker 里修掉的那条写入路径，也正是会让 `healProfilesModuleFallback`/`ensureSymlink` 在下一次启动抛 `exists and is not a symlink or dsh-managed module proxy` 的那条。现在它改走同一套"可证明才回收"的逻辑建 junction（Windows）/ 目录符号链接（POSIX），两条同步路径不会再互相矛盾。
+  - **回归测试**：`scripts/integration-plugin-mount.test.mjs` 用真实导出函数在临时 Harness home 上跑十个场景——缺失链接被建立（且 realpath 仍位于 `profiles/node_modules` 下）、残留实体副本被回收、已正确的链接保持字节不变、同名外来目录绝不被删、悬空链接被重建、已有/外来声明被保留、非 harness profile 只建链接不写声明、树外安装为空操作、`runSync` 写链接且仍拒绝替换外来包。
 
 - **v1.5.0** — `syncProfilesToDeploy` 改为建链接而非复制（修复主程序更新之后启动崩溃）：
   - **根因**：函数名与日志字段 `junctionSkipped` 都写着"链接"，但新建路径从未建过链接——用的是 `cp(src, dst, { recursive: true, force: true })`。已存在且 realpath 指向同一份的条目会被跳过（实机 236 个里跳过 228 个），而 profile 里**尚不存在**的包（`0.1.6-alpha.1` 更新带来的 8 个）被**实体复制**进 `$DSH_HOME/profiles/node_modules/@deepseek-ai/`。
