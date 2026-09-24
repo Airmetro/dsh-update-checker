@@ -108,11 +108,12 @@ New-Item -ItemType Junction `
 ## 平台与安装布局支持
 
 - **检测（检查类功能）** — 布局无关，可在任何机器工作。
-- **一键更新与重启** — 针对开发时的布局调优：
-  - **仅 Windows** — 重启流程 spawn PowerShell。
+- **一键更新与重启** — 不再仅限 Windows：
+  - **服务停止/启动探测**：Windows 用 `Get-NetTCPConnection` + `taskkill`，Linux/macOS 用 `ss -H -tlnp "sport = :<端口>"`（退化时 `lsof -tiTCP:<端口> -sTCP:LISTEN`）+ `SIGKILL`。端口始终显式指定，因此绝不会误匹配无关监听；POSIX 下只有当 `/proc/<pid>/cmdline` 读不到、或其中确实写着 node/dsh 时才杀死该 PID。
+  - **POSIX 重启看护**为 `scripts/restart-watchdog.sh`，与 `scripts/restart-watchdog.ps1` 一一对应：环境变量相同（`DSH_RESTART_PORT`、`DSH_RESTART_PID`、`DSH_RESTART_NODE_FILE`、`DSH_RESTART_NODE_ARGS`（JSON 数组）、`DSH_RESTART_LAUNCHER`、`DSH_RESTART_WORKDIR`、`DSH_RESTART_LOG`、`DSH_RESTART_RESULT`），结果 JSON 也相同（`startedAt`、`port`、`pid`、`recovered`、`recoveredAt`、`attempts`、`error`）。重启顺序：node argv → `systemctl --user restart dsh-web.service` → 启动器路径（作为单个参数传入，带空格的路径不会被拆开）；三者皆无时明确报 `no launcher available`，而不是假装恢复成功。调用方式是 `sh <脚本>`，因此不依赖可执行位。
   - 主程序更新自适应：部署根有 `package.json` 时原位 `npm install`，否则 `npm install -g`；两种形态都先过 dry-run 守卫并在安装后回读校验版本。
   - 插件更新 — 临时目录安装 + 拷贝，兼容 npm 11/12+。
-- 其它平台/布局下横幅与版本检查仍可用。Linux/macOS 上主框架更新路由现在会立即以 `501 E_PLATFORM_UNSUPPORTED` 拒绝（该平台的安装/重启仍需改代码），而不是卡在 8% 并残留横幅；插件更新与回滚可用。完整 POSIX 支持是自然的下一步。
+- **无法安全完成时**，`/update` 仍会返回 `501 E_PLATFORM_UNSUPPORTED`：只有 `ss` 或 `lsof` 存在时才能可靠地定位服务进程。装一个（`iproute2`、`lsof`）即可，或者停掉 DSH 手工更新。
 
 ## 说明
 
@@ -121,6 +122,11 @@ New-Item -ItemType Junction `
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package.json` + `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json` + `main-snapshot` 里 `@deepseek-ai` 框架整树副本），主程序与插件都有对应回滚路由；主程序回滚在 `main-snapshot` 存在时直接从磁盘恢复，而不是从 registry 重新安装旧版本。
 
 ## 更新日志
+
+- **v1.6.2** — Linux/macOS 可用一键主程序更新；插件更新不再被 pnpm 重装打回（issue #27 #28 #29，PR #26）：
+  - **POSIX 主程序更新（#29，取代 PR #19）**：更新 worker、服务停止/启动探测与重启路由不再假定 Windows PowerShell。worker 改为直接 `node <脚本>`（detached）拉起，并接上 `error` 监听——spawn 失败会释放更新锁、写入真实的 `error` 进度记录；此前这种失败是静默的，横幅会永远停在 8%。POSIX 下找端口进程用 `ss -H -tlnp "sport = :<端口>"`，退化时用 `lsof -tiTCP:<端口> -sTCP:LISTEN`，绝不扫描全部监听；只有 `/proc/<pid>/cmdline` 读不到或确实写着 node/dsh 时才杀该 PID，用 `SIGKILL` 取代 `taskkill`。`scripts/restart-watchdog.sh` 与 `restart-watchdog.ps1` 对齐（同样的环境变量、同样的结果 JSON），重启顺序为 node argv → `systemctl --user restart dsh-web.service` → 启动器路径（作为**单个**参数传入）。Windows 行为完全未变（`Get-NetTCPConnection`、`taskkill /T /F`、PowerShell `Start-Process`）。既没有 `ss` 也没有 `lsof` 的机器仍以 `501 E_PLATFORM_UNSUPPORTED` 快速失败。
+  - **只有 peerDependencies 的插件能装了（#28）**：`buildStageInstallArgs`/`buildPluginInstallArgs` 追加 `--legacy-peer-deps`。暂存前缀是一棵用完就丢的树，插件的 peer 由 DSH 宿主机在运行时提供，所以这里不该去 registry 解析——那边 `*` 范围会落到一个并不存在的包上（`@deepseek-ai/dsh-compact`，`E404`），于是所有纯 peer 插件必然 `ERESOLVE` 失败。
+  - **`PROFILES_ROOT` 支持"每个 profile 自带 node_modules"布局（#27、PR #26）**：`dirname(profileNodeModules)` 只在共用布局下才是 profiles 目录；对 `…/profiles/<名字>/node_modules` 它等于 profile 目录本身，于是 `findDeclaringProfiles()` 一个清单都找不到，版本从未写回 `package.json`，锁文件也不会推进（`persistedManifest:0`，而 `persistedLock:true` 不过是 `[].every(...)`）。此后任何一次 `pnpm add`/`pnpm install` 都会按这份陈旧锁文件重新 reify，把此前更新过的插件全部打回冻结版本。新增的 `pickProfilesRoot()` 同时支持两种布局，`pickDshHome()` 也随之修正，自定义 `DSH_HOME` 不会再退回 `~/.dsh`。
 
 - **v1.6.1** — 在 v1.6.0 基础上做加固与"说实话"的修正：
   - **`GET /mount.json` 不再写盘。** 它原本在一个普通 GET 里调用 `ensurePluginMount()`——建 junction、
@@ -145,32 +151,6 @@ New-Item -ItemType Junction `
   - **构造上安全**：幂等；已有声明绝不覆盖（你刻意设置的 `file:`/`link:` 会被保留并记为 `foreignDecl`）；实体目录只有在 `package.json` 的 `name` 能证明是本插件自己的副本时才回收；其余情况报告 `refusing to replace` 并原样留下；只写 harness profile；插件若装在 `profiles/node_modules` 之外（npm `-g`、部署根）则安全跳过。
   - **`runSync` 不再往 profile 里写实体目录**：`lib/index.js` 中主程序同步对 `@deepseek-ai/*` 框架树仍在用 `cp(src, dst, { recursive: true, force: true })`——正是 v1.5.0 在更新 worker 里修掉的那条写入路径，也正是会让 `healProfilesModuleFallback`/`ensureSymlink` 在下一次启动抛 `exists and is not a symlink or dsh-managed module proxy` 的那条。现在它改走同一套"可证明才回收"的逻辑建 junction（Windows）/ 目录符号链接（POSIX），两条同步路径不会再互相矛盾。
   - **回归测试**：`scripts/integration-plugin-mount.test.mjs` 用真实导出函数在临时 Harness home 上跑十个场景——缺失链接被建立（且 realpath 仍位于 `profiles/node_modules` 下）、残留实体副本被回收、已正确的链接保持字节不变、同名外来目录绝不被删、悬空链接被重建、已有/外来声明被保留、非 harness profile 只建链接不写声明、树外安装为空操作、`runSync` 写链接且仍拒绝替换外来包。
-
-- **v1.5.0** — `syncProfilesToDeploy` 改为建链接而非复制（修复主程序更新之后启动崩溃）：
-  - **根因**：函数名与日志字段 `junctionSkipped` 都写着"链接"，但新建路径从未建过链接——用的是 `cp(src, dst, { recursive: true, force: true })`。已存在且 realpath 指向同一份的条目会被跳过（实机 236 个里跳过 228 个），而 profile 里**尚不存在**的包（`0.1.6-alpha.1` 更新带来的 8 个）被**实体复制**进 `$DSH_HOME/profiles/node_modules/@deepseek-ai/`。
-  - **为何致命**：dsh 的 `healProfilesModuleFallback`/`ensureSymlink` 只接管符号链接或 dsh 托管的模块代理目录，真实目录会直接抛错 `dsh: <path> exists and is not a symlink or dsh-managed module proxy; remove it so dsh can manage the installation fallback`，且发生在 `composeProfile` 阶段——**Web 服务监听之前**，于是下一次启动直接崩掉；而更新本身却报告成功（`main-profile-sync total:236 junctionSkipped:228 failed:[]`）。
-  - **修复**：写入路径改为 `mkdir` + `symlink(src, dst, process.platform === "win32" ? "junction" : "dir")`，profile 只保留指向部署侧唯一一份的链接——这也正是 `healProfilesModuleFallback` 期望的形态。
-  - **自愈**：目标已存在但不是部署副本时会安全回收——符号链接（含悬空链接）直接重建；实体目录必须 `package.json` 的 `name` 与部署侧一致才替换；其余一律原封不动并记一条失败（`refusing to replace`），顺带堵上第二个此前未被报告的隐患：`fs.cp(..., { force: true })` 对"同名但来自别处"的目录不会报错，而是覆盖那个包的文件、留下其余内容，把它静默毁掉。
-  - **回归测试**：`scripts/integration-sync-profiles.test.mjs` 从真实 worker 源码里**提取** `syncProfilesToDeploy` 执行（避免测试与实现漂移），覆盖六个场景——新包建为链接、残留实体副本被回收、同名外来目录绝不被删除、悬空链接被重建、非 `dsh` 前缀包被忽略、deploy 树不可读时安全退出。同一套用例对 1.4.23 的 worker 4/6 失败，对本版 6/6 通过。
-  - **安装后的健康检查现在证明"新进程真的起来了"**：原先只要端口有人应答就算成功——`GET /` 返回 200 就扫资源，返回 401/403/407 直接判成功——于是在 `composeProfile` 阶段就崩掉（根本没有服务器）的构建也会被报告为"更新成功"。现在宿主把自己当前的 `instanceId` 交给 worker，worker 从插件自身的路由读回（`update-progress.json`，其次 `status.json`，两者都无需浏览器会话即可访问）：读到**不同**的 id 才说明新构建确实起来了；读到**相同**的 id 说明重启前那个实例还在应答，本次更新判**失败**。探针无法判断时（插件未组合、路由尚未就绪、宿主较旧没传 id）保持原有行为，不把可能健康的更新误判为失败。
-  - **预发布闸门改为按"频道"判断，而不再问"是否存在正式版"**：原条件是 `isPrerelease(target) && !allowPrerelease && hasStable`，而 `hasStable` 的含义是"npm 上存在非预发布版本"。`@deepseek-ai/dsh` 至今发布的**全部**版本都是 rc/alpha，`hasStable` 恒为 false，这道闸门从未生效：`allowPrerelease: false` 的部署照样被从 `rc` 升到了 `alpha`。现在按预发布标识（`alpha`/`beta`/`rc`/正式版）比较——同频道升级放行，跨频道提升以 `E_PRERELEASE` 拒绝并在文案里指明 `allowPrerelease` 设置；数据缺失时失败开放（宁可不拦，也不误拦）。
-  - **状态、备份与日志遵循 `DSH_HOME`**：原先只按"本包装在哪个 node_modules"推导 home，装在 `…/profiles/node_modules` 之外时会把状态写到程序文件旁边。现在：布局确实是 Harness home 时仍以安装位置为准（`DSH_UC_PROFILE_NODE_MODULES` 覆盖与测试隔离因此不受影响），否则退回 `DSH_HOME`，再退回 `~/.dsh`。
-  - **已被此 bug 影响的机器如何自救**：把 `$DSH_HOME/profiles/node_modules/@deepseek-ai/` 下的**真实目录移走**（不要删，先备份），下次启动 dsh 会自动把它们重建为 junction。
-
-- **v1.4.23** — 主程序实时进度、残留更新状态自愈、插件安全替换（issue #17 #18 #20 #21 #25，PR #23 #24）：
-  - **依赖树检查阶段有真实进度**（#18 及"6% → 64%"反馈）：此前下载阶段在整个 `npm install --dry-run`（数分钟）里一直停在 4–6%，然后直接跳到 64%。现在每个阶段都有单调递增的"爬坡"计时器，每秒重写一次进度记录（`phaseCreepPercent`，已导出并单测），npm/tarball 的真实计数只把下限往上抬。里程碑整体重排（`下载 10→55`、`停止服务 58`、`安装 62→78`、`校验 84→87`、`同步声明 88`、`重启 92→95`、`健康检查 96`、`等待恢复 97–98`、`完成 100`），任何阶段都不再瞬移；启动服务的 30 秒与重启观察期间同样持续刷新进度。
-  - **重启改为"继续观察"而不是直接判失败**（#18）：安装、完整性校验、版本声明同步都成功之后，重启失败不再终止更新。worker 进入 `restart-pending` 状态持续刷新进度，重新探测端口并按需重新拉起启动器，最长等待 `DSH_UC_RESTART_WINDOW_MS`（默认 150000 毫秒），之后才以 `E_RESTART` 结束——记录里带 `installed`、`restartPending: true`，文案明确"安装本身已成功"。期间端口起来即判定成功。
-  - **进度计数修正**（#18）：安装阶段不再用硬编码的 `587` 去除 npm 的 http 行计数；总数改为从真实 lockfile 读取（`countLockPackages`，未知时 `null`），`done` 按总数封顶，界面上不会再出现 `done > total`（如 1338/587）。横幅同时提示"关闭此页面不会中断更新"。
-  - **前端需要认证不再被误判为服务坏了**（#18，实机场景）：健康检查原先要求 `GET /` 返回 200，于是在 `/` 返回 **401/403**（口令/令牌保护界面）的机器上，**每一次安装成功最后都以 `E_RESTART: update installed <version> but restart/health failed: GET / -> 401` 收尾**，而紧接着的崩溃自愈又把服务拉起来了——用户被告知"更新失败"，实际早已成功。健康判定现在抽成纯函数 `classifyHealthStatus`：200 → 继续做 dist/assets 全量校验；401/403/407 → 服务活着但前端受认证保护，判定更新成功并跳过资源扫描（记录 `main-update-health-auth-gated`）；超时、5xx 与其它 4xx 仍判失败。`E_RESTART` 文案也同时给出启动器错误与健康检查问题。
-  - **残留进度/状态自愈**（#25）：修掉 `writeProgress` 里被缓存记录覆盖 `at` 时间戳的问题——`at` 会永远停在下发第一次写入的时刻，这正是"更新中断后看起来仍是更新中"或"正在跑的更新看起来过期"的根因。进度记录现在写入属主 `workerPid`/`hostPid`；`isStaleProgress` 在属主进程已消失时判为陈旧（无 pid 时按 10 分钟无更新判定），Host 在启动时与读取时把它改写成 `running:false` + `phase:error` + `code:E_INTERRUPTED` 并释放更新锁。陈旧锁不再阻塞新更新 10 分钟：超过 2 分钟拉起宽限期且无存活 worker 的锁会被丢弃。
-  - **worker 崩溃不再留下 `running:true`**（#25）：`uncaughtException`/`unhandledRejection` 与 `main()` 的致命异常都会写入一条 `error` 进度并释放锁，此前进程直接消失。`startService`/`taskkill` 的 spawn 补上 `error` 监听（POSIX 的 `ENOENT`、批处理文件的 `EINVAL` 以前会变成未处理的 error 事件、把 worker 打断在更新中途），拉起失败也改为快速失败而不是干等 30 秒。
-  - **插件替换改为"先暂存后交换"**（#21）：`backupAndReplace` 先把新内容拷到目标旁的 `.dsh-uc-staging-*`，再把旧目录改名为 `.dsh-uc-trash-*`，然后把暂存树改名就位，最后尽力删除回收站。此前"先删后拷"在 Windows 上遇到运行中宿主映射的原生模块（如 `better_sqlite3.node`）会在**已经删掉全部文件之后**才报 `EPERM`，把插件掏成只剩那个被占用文件（连 `package.json` 都没了）、并连带拖垮宿主。现在交换前任何失败都不会动已装包，被占用的回收站留待下次更新清理。"不再提示"两个按钮也不再互相写对方的开关。
-  - **瞬时请求失败不再触发整页刷新**（#20）：client 的 1.5 秒状态探针把任何一次失败请求（LLM 流式输出、工具执行、代理抖动）都当成"服务重启过"，下一次成功就无条件 `location.reload()`，导致对话过程中整页刷新。现在改为由服务端 `instanceId` 驱动：只有实例真的变化才刷新，且同一实例最多刷新一次（`sessionStorage` 守护），瞬时失败被完全忽略。
-  - **locale 服务时序修复**（#22/#23）：client 半身改为等待 `locale` 服务（`ctx.inject(["slots", "locale"])`）后再注册字典与插槽绑定，不再在 apply 时读 `ctx.get("locale")` 静默退化为 `fallbackT()`（永远中文），英文界面下不再显示中文。
-  - **POSIX 主程序更新快速失败**（#24）：Linux/macOS 上主框架 `/update` 路由在创建锁、备份、拉起 Windows 专用 PowerShell 之前就返回 `501 E_PLATFORM_UNSUPPORTED`，不再卡在 8% 并残留横幅。完整 POSIX 支持仍待上游 PR #19。
-
-- **v1.4.22** — 版本管理器 shim 解析（issue #17）：
-  - `resolveNodeExe()` 通过 shim 执行 `node -p process.execPath` 反查真实 Node，`getNpmCli()` 不再回退到不存在的路径，而是抛出带 `DSH_UC_NODE_EXE` 提示的 `ENPMCLI`，避免 npm 阶段出现 `MODULE_NOT_FOUND`。
 
 ## 开发
 

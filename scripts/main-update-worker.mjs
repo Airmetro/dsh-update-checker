@@ -26,7 +26,7 @@ import https from "node:https";
 import { gunzipSync } from "node:zlib";
 
 
-import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock } from "../lib/index.js";
+import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock, collectPortPids, servicePidsOnPort, portAlive, killPid, probePortOpen } from "../lib/index.js";
 
 const ROOT = process.env.DSH_UC_UPDATE_ROOT;
 const TARGET = process.env.DSH_UC_UPDATE_TARGET;
@@ -290,35 +290,16 @@ function compareVersions(a, b) {
 
 const PORT = Number(process.env.DSH_UC_UPDATE_PORT) || 3080;
 
-function portPids() {
-  const ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-  const cmd =
-    `Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue | ` +
-    `Select-Object -ExpandProperty OwningProcess -Unique`;
-  return new Promise((resolve) => {
-    const c = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", cmd], { windowsHide: true });
-    let o = "";
-    c.stdout.on("data", (d) => (o += d.toString()));
-    c.on("error", () => resolve([]));
-    c.on("close", () =>
-      resolve(o.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0))
-    );
-  });
+async function portPids() {
+  return await collectPortPids(PORT);
 }
 
 async function killPidsOnPort() {
-  const pids = await portPids();
-  for (const pid of pids) {
-    if (pid === process.pid) continue;
-    try {
-      const c = spawn("C:\\Windows\\System32\\taskkill.exe", ["/PID", String(pid), "/F"], { windowsHide: true, stdio: "ignore" });
-      c.on("error", () => {});
-    } catch {  }
-  }
+  for (const pid of await servicePidsOnPort(PORT)) killPid(pid);
 }
 
 async function portOccupied() {
-  return (await portPids()).length > 0;
+  return await portAlive(PORT);
 }
 
 const RESTART_EXTRA_WINDOW_MS = Number(process.env.DSH_UC_RESTART_WINDOW_MS) || 150000;
@@ -327,11 +308,11 @@ const RESTART_MAX_SPAWNS = 3;
 
 async function waitPortQuiet(maxMs, onTick) {
   const deadline = Date.now() + maxMs;
-  let occupied = (await portPids()).length > 0;
+  let occupied = await portOccupied();
   while (Date.now() < deadline && !occupied) {
     if (onTick) await onTick();
     await sleep(1000);
-    occupied = (await portPids()).length > 0;
+    occupied = await portOccupied();
   }
   return occupied;
 }
@@ -340,7 +321,7 @@ async function ensureServiceStopped(maxMs = 30000) {
   const deadline = Date.now() + maxMs;
   await killPidsOnPort();
   while (Date.now() < deadline) {
-    if ((await portPids()).length === 0) return { ok: true };
+    if (!(await portOccupied())) return { ok: true };
     await killPidsOnPort();
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -352,14 +333,13 @@ async function stopService() {
   await killPidsOnPort();
   let still = true;
   while (Date.now() < deadline) {
-    still = (await portPids()).length > 0;
+    still = await portOccupied();
     if (!still) break;
     await killPidsOnPort();
     await new Promise((r) => setTimeout(r, 500));
   }
   return { ok: !still, error: still ? `port ${PORT} still listening` : null };
 }
-
 
 async function startService() {
   const port = PORT;
@@ -380,30 +360,21 @@ async function startService() {
     return { ok: false, error: `launcher spawn failed: ${err.message}` };
   }
   if (spawnError) return { ok: false, error: `launcher spawn failed: ${spawnError.message}` };
-  const ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-  const cmd = `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`;
-  const probe = () =>
-    new Promise((resolve) => {
-      const c = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", cmd], { windowsHide: true });
-      let o = "";
-      c.stdout.on("data", (d) => (o += d.toString()));
-      c.on("error", () => resolve([]));
-      c.on("close", () =>
-        resolve(o.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0))
-      );
-    });
   const deadline = Date.now() + 30000;
   let pid = null;
+  let up = false;
   while (Date.now() < deadline) {
     if (spawnError) return { ok: false, error: `launcher spawn failed: ${spawnError.message}` };
-    const nums = await probe();
-    if (nums.length) { pid = nums[0]; break; }
+    const nums = await collectPortPids(port).catch(() => []);
+    if (nums.length || (await probePortOpen(port))) {
+      pid = nums[0] || null;
+      up = true;
+      break;
+    }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  return { ok: !!pid, pid, error: pid ? null : `service did not listen within 30s` };
+  return { ok: up, pid, error: up ? null : `service did not listen within 30s` };
 }
-
-
 
 
 async function verifyTree() {

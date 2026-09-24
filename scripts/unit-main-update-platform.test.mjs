@@ -6,11 +6,12 @@ test('mainUpdatePlatformError: win32 permits the existing update worker', () => 
   assert.equal(mainUpdatePlatformError('win32'), null);
 });
 
-test('mainUpdatePlatformError: POSIX rejects before backup and Windows-only spawn', () => {
+test('mainUpdatePlatformError: POSIX is gated on a usable port probe', () => {
+  assert.equal(mainUpdatePlatformError('linux', { probe: true, systemctl: false }), null);
+
   for (const platform of ['linux', 'darwin']) {
-    assert.deepEqual(mainUpdatePlatformError(platform), {
-      code: 'E_PLATFORM_UNSUPPORTED',
-      error: 'One-click core updates are unsupported on Linux/macOS. Stop DSH, update it manually, then restart DSH.',
-    });
+    const err = mainUpdatePlatformError(platform, { probe: false, systemctl: false });
+    assert.equal(err.code, 'E_PLATFORM_UNSUPPORTED');
+    assert.match(err.error, /ss|lsof/);
   }
 });

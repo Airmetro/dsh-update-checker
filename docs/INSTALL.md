@@ -4,7 +4,7 @@
 
 ## 前置条件
 
-- Windows + Node.js，且 DeepSeek Harness（`dsh`）本体已能正常运行
+- Windows / macOS / Linux + Node.js，且 DeepSeek Harness（`dsh`）本体已能正常运行（Linux/macOS 上主程序一键更新需要系统里有 `ss` 或 `lsof`）
 - `@deepseek-ai/dsh` 是 **npm 全局安装**（`npm install -g`）——本插件的一键更新/重启针对此形态开发；非全局安装请先看「平台与安装布局支持」
 - 能访问 npm registry
 
