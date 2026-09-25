@@ -101,11 +101,11 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 
 - **Plugin / profile dir** — derived from the plugin's own install location (`import.meta.url`).
 - **`$DSH_HOME`** — the parent of the `profiles` root (state, backups, restart log live there).
-- **Composition file** — defaults to `$DSH_HOME/profiles/web/cordis.patch.yml`.
+- **Composition file** — the profile that is actually running wins: `$DSH_PROFILE_DIR/cordis.patch.yml` → `profiles/$DSH_PROFILE/…` → the profile whose patch names this plugin → `$DSH_HOME/profiles/web/cordis.patch.yml`. (v1.6.3; before that the `web` default was used whenever nothing proved otherwise, so a host serving another profile read the wrong `node_modules` — issue #31.)
 - **Deployment root** — junction `realpath` first, then `DSH_DEPLOY_ROOT`, then `process.cwd()`, then the **npm global prefix** (parent of `npm root -g`'s output; v1.4.9+ covers `npm -g` installs).
   - systemd / `npm -g` escape hatch: if auto-detection ever misses your setup, set `DSH_DEPLOY_ROOT` to the directory that contains `node_modules/@deepseek-ai/dsh` (e.g. `<npm prefix>/lib` on Linux).
-- **Node / npm executables** — `resolveNodeExe()` finds the real Node: `DSH_UC_NODE_EXE` override → `npm_node_execpath` → `process.execPath` when it is Node → common install dirs → `PATH`. This is what makes DSH Desktop (Electron, where `process.execPath` is `electron.exe`) able to run npm for plugin updates. If your Desktop build bundles Node elsewhere, set `DSH_UC_NODE_EXE` to it. If your Node is managed by **mise / asdf / nvm** and your `PATH` only exposes the version-manager **shim** (e.g. `~/.local/share/mise/shims/node`), the shim directory has no `npm` beside it; v1.4.22+ resolves the real binary by running `node -p process.execPath` through the shim. If that still fails (or you want to skip the lookup), set `DSH_UC_NODE_EXE` to the real binary, e.g. `mise which node` / `asdf which node`.
-- **Restart launcher** — self-adapting: probes common launcher names under the deployment root; the web port is read from the running `webServer.port`.
+- **Node / npm executables** — `resolveNodeExe()` finds the real Node: `DSH_UC_NODE_EXE` override → `npm_node_execpath` → `process.execPath` when it is Node → common install dirs → `PATH`. This is what makes DSH Desktop (Electron, where `process.execPath` is `electron.exe`) able to run npm for plugin updates. If your Desktop build bundles Node elsewhere, set `DSH_UC_NODE_EXE` to it. If your Node is managed by **mise / asdf / nvm** and your `PATH` only exposes the version-manager **shim** (e.g. `~/.local/share/mise/shims/node`), the shim directory has no `npm` beside it; v1.4.22+ resolves the real binary by running `node -p process.execPath` through the shim. If that still fails (or you want to skip the lookup), set `DSH_UC_NODE_EXE` to the real binary, e.g. `mise which node` / `asdf which node`. v1.6.3 searches npm more widely: beside Node, in `node_modules_<major>` (Fedora/RHEL `nodejs24-npm`), `/usr/lib`, `/usr/local/lib`, `/opt/homebrew/lib`, `/usr/local/opt/npm/lib`, `$npm_config_prefix`, and through every `npm` / `npm.cmd` on `PATH` — including the real target behind a shim. A packaged desktop app that ships no npm at all still needs one installed (issue #32).
+- **Restart launcher** — self-adapting: `DSH_UC_LAUNCHER` / `DSH_RESTART_LAUNCHER`, then common launcher names under the deployment root (`DeepSeek Harness.cmd`, `start-dsh.cmd`, …); the chosen launcher is spawned **with a visible window**, so the restarted server has a console (v1.6.3 — a hidden spawn left an orphan holding the port and swallowed the access URL). The web port is read from the running `webServer.port`.
 - **Tuning env vars** — `DSH_UC_UPDATE_PORT` sets the port the update worker stops/starts/probes (default `3080`), and `DSH_UC_RESTART_WINDOW_MS` sets how long the worker keeps observing a slow first start before giving up (default `150000`; the progress record streams the whole time).
 
 ## Platform & install-layout support
@@ -125,6 +125,13 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
 - Before `npm install`, a backup (deployment `package.json` + `package-lock.json` + both @deepseek-ai version manifests + `backup-meta.json` + a `main-snapshot` copy of the `@deepseek-ai` framework tree) is written to `$DSH_HOME/dsh-update-checker-backups/<timestamp>/`; both main-program and plugin rollback routes are provided, and main-program rollback restores from the `main-snapshot` when present instead of re-installing from the registry.
 
 ## Changelog
+
+- **v1.6.3** — a post-update restart you can see, package-count progress, and npm discovered off the beaten path (issues #30 #31 #32):
+  - **No more console-less orphan after a core update.** `startService()` relaunched the server with `detached: true` + `stdio: "ignore"` + `windowsHide: true` — an invisible instance with no console. It outlives the update worker, keeps holding the web port, and the access URL/token printed at startup is discarded with its output; the next launch then dies with `listen EADDRINUSE 127.0.0.1:3080` and a wall of "N required plugins did not activate" (`webserver` is required, so the whole plugin graph fails to compose). The restart now prefers the deployment's own launcher (`DSH_UC_LAUNCHER` / `DSH_RESTART_LAUNCHER` / `DeepSeek Harness.cmd` / `start-dsh.cmd` / …) and spawns it **with a visible window**; with no launcher it falls back to `node … bin.js web`, also visible, and the choice is recorded as `main-update-service-restart` in the ops log.
+  - **Progress is now "packages downloaded / total packages".** The bar no longer rides the dependency-tree creep or counts npm HTTP lines (which include metadata, so it ran ahead of reality). While packages are downloaded/installed the percent is `round(done / total * 100)` — 100 of 200 packages is 50%, 198 of 200 is 99% — with `已下载 137/273 个包（50%）` as the detail. The total comes from the npm dry-run ("added N packages") or the lockfile, and the tarball fallback counts downloaded tarballs the same way. The bar never rewinds, and 100% stays reserved for the finished state.
+  - **npm is found on distro layouts and shimmed installs (#30 #32).** `npmCliCandidates()` also looks in `node_modules_<major>` (Fedora/RHEL `nodejs24-npm`), `/usr/lib`, `/usr/local/lib`, `/opt/homebrew/lib`, `/usr/local/opt/npm/lib` and `$npm_config_prefix`; `locateNpmCli()` resolves every `npm`/`npm.cmd` on `PATH` (and the real target behind a shim) before failing, and its `ENPMCLI` message now names the layouts it searched and the `DSH_UC_NODE_EXE` escape hatch. A packaged desktop app that ships **no** npm at all still cannot run plugin updates — that case needs Node/npm installed or an in-app tarball installer (tracked in #32).
+  - **The plugin list is read from the profile that is actually running (#31).** `findCompositionFile()` defaulted to `profiles/web/cordis.patch.yml` whenever it could not prove otherwise, so on a host serving another profile (the desktop app's `desktop`) the panel read the *other* profile's `node_modules` — reporting `dshmarket 1.60.0 → 1.65.0` forever while the running profile already had 1.65.0. The composition and its `node_modules` now resolve from `DSH_PROFILE_DIR` / `DSH_PROFILE` first, still validated against this installation's profiles root.
+  - **Tests**: 230 passing (`node --test "scripts/*.test.mjs"`), with new coverage for the package-count mapping, npm fetch parsing, launcher choice and visibility, running-profile resolution and the Fedora `node_modules_<major>` layout; the progress E2E timeline asserts the new contract.
 
 - **v1.6.2** — one-click core updates on Linux/macOS, and plugin updates that survive a pnpm reify (issues #27 #28 #29, PR #26):
   - **POSIX core updates (#29, supersedes PR #19)**: the update worker, the service stop/start probes and the restart route no longer assume Windows PowerShell. The worker is spawned directly (`node <script>`, detached) with an `error` handler that releases the update lock and writes a real `error` progress record — a failed spawn used to be silent and left the banner stuck at 8%. Port discovery on POSIX uses `ss -H -tlnp "sport = :<port>"`, falls back to `lsof -tiTCP:<port> -sTCP:LISTEN`, and never scans every listener; a PID is killed only when `/proc/<pid>/cmdline` is unreadable or names node/dsh, and `SIGKILL` replaces `taskkill`. `scripts/restart-watchdog.sh` mirrors `restart-watchdog.ps1` (same environment variables, same result JSON) and relaunches through the node argv first, then `systemctl --user restart dsh-web.service`, then the launcher path as **one** argument. Windows is untouched (`Get-NetTCPConnection`, `taskkill /T /F`, the PowerShell `Start-Process` wrapper). The `501 E_PLATFORM_UNSUPPORTED` fail-fast is kept for hosts that have neither `ss` nor `lsof`.
@@ -153,53 +160,6 @@ All paths are **auto-detected at runtime — nothing is hardcoded**:
     the plugin. The manual link + declaration is **required for a fresh install** (and for each new
     profile); self-maintenance covers everything after that. Earlier wording implied a restart could
     heal the broken case, which is exactly the case it cannot.
-
-- **v1.6.0** — the plugin mounts itself, so `dsh` `0.1.6-alpha.2` stops failing to load it:
-  - **Root cause**: `0.1.6-alpha.2` changed the profile resolution default from
-    `options.resolutionMode ?? "link"` to `?? "runtime"`. `PluginPackages` then receives
-    `{ generation, behavior: "enforce" }` instead of `{}`, and `routeScoped` registers
-    `$DSH_HOME/profiles/node_modules` as a *shared managed* directory that it `break`s out of
-    rather than searching. That directory can now only serve the entries in the resolution
-    generation — the deployment dependency closure and the selected bundle closure — and a
-    third-party plugin is in neither, so the lookup falls through to `after-fallback` with
-    `$DSH_HOME/package.json` as the base and dies at `ERR_MODULE_NOT_FOUND`, **before the web
-    server binds**. dsh rewrites the importer path in that error to point at the profile
-    directory, so it reads as "the package next door cannot be found".
-  - **Fix — the plugin now ensures its own mount** (`ensurePluginMount`, run at startup and
-    exposed at `GET /dsh-update-checker/mount.json`, with the result also carried in
-    `status.json` as `mount`): for every profile it creates/repairs
-    `profiles/<profile>/node_modules/dsh-update-checker` as a **junction** to the real package in
-    `profiles/node_modules`, and writes the `dependencies` declaration into every harness
-    profile. Both halves are needed: the link is what makes `routeScoped` find a candidate
-    *before* the shared directory (the documented "pnpm-managed entries in the profile's
-    `node_modules` resolve first"), and the declaration is what `readProfilePlugins` and this
-    plugin's own `findDeclaringProfiles`/`persistPluginUpdate` use to decide ownership —
-    without it the plugin reports itself as permanently outdated. A junction, never a copy: a
-    copy would put `import.meta.url` under `profiles/<profile>/node_modules`, where
-    `pickDshHome` no longer recognises the Harness home, drifting the plugin's self-location
-    and its `@deepseek-ai/*` sync target. Correct under `"link"` mode too — no route hook is
-    installed there and native resolution reaches the same link — so this is not a
-    version-conditional hack.
-  - **Safe by construction**: idempotent; an existing declaration is never overwritten (a
-    `file:`/`link:` spec you set deliberately is preserved and reported as `foreignDecl`); a
-    real directory is reclaimed only when its `package.json` `name` proves it is this plugin's
-    own copy; anything else is reported as `refusing to replace` and left untouched; writes go
-    to harness profiles only, and a plugin installed outside `profiles/node_modules` (npm `-g`,
-    deployment root) skips cleanly.
-  - **`runSync` no longer leaves real directories in the profile**: the main-program sync in
-    `lib/index.js` still called `cp(src, dst, { recursive: true, force: true })` for the
-    `@deepseek-ai/*` framework tree, the same write path v1.5.0 fixed in the update worker —
-    and the same one that makes `healProfilesModuleFallback`/`ensureSymlink` throw
-    `exists and is not a symlink or dsh-managed module proxy` at the next launch. It now
-    creates a junction (Windows) / directory symlink (POSIX) through the same
-    verified-reclaim logic, so the two sync paths can no longer disagree.
-  - **Regression tests**: `scripts/integration-plugin-mount.test.mjs` drives the real exported
-    functions against a temporary Harness home and covers ten scenarios — a missing link is
-    created (and its real path stays under `profiles/node_modules`), a leftover real copy is
-    reclaimed, a correct link is left byte-identical, a same-named foreign directory is never
-    deleted, a dangling link is rebuilt, an existing/foreign declaration is preserved, a
-    non-harness profile gets a link but no declaration, an out-of-tree install is a no-op, and
-    `runSync` writes links while still refusing to replace foreign packages.
 
 ## Development
 

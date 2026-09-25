@@ -98,11 +98,11 @@ New-Item -ItemType Junction `
 
 - **插件 / profile 目录** — 由插件自身安装位置（`import.meta.url`）推导。
 - **`$DSH_HOME`** — `profiles` 根目录的父目录（状态文件、备份、重启日志都在这里）。
-- **组合文件** — 默认 `$DSH_HOME/profiles/web/cordis.patch.yml`。
+- **组合文件** — 以**正在运行的 profile** 为准：`$DSH_PROFILE_DIR/cordis.patch.yml` → `profiles/$DSH_PROFILE/…` → 补丁里声明本插件的 profile → `$DSH_HOME/profiles/web/cordis.patch.yml`。（v1.6.3；此前无法判定时一律用 `web` 默认值，宿主跑在别的 profile 时会读错 `node_modules`——见 issue #31。）
 - **部署根** — 先 junction `realpath` 解析，再 `DSH_DEPLOY_ROOT`，然后 `process.cwd()`，最后 **npm 全局前缀**（`npm root -g` 的父目录，v1.4.9 起支持 npm -g 全局安装形态）。
   - systemd / npm -g 逃生口：自动探测万一没命中你的布局时，把 `DSH_DEPLOY_ROOT` 设为包含 `node_modules/@deepseek-ai/dsh` 的目录（Linux 上通常是 `<npm prefix>/lib`）。
-- **node / npm 可执行文件** — `resolveNodeExe()` 定位真实 node：`DSH_UC_NODE_EXE` 覆盖 → `npm_node_execpath` → `process.execPath`（若确实是 node）→ 常见安装目录 → PATH。这就是 DSH Desktop（Electron，`process.execPath` 是 electron.exe）能跑 npm 更新插件的原因；若你的桌面端把 node 打包在别处，设 `DSH_UC_NODE_EXE` 指向它即可。若你的 node 由 **mise / asdf / nvm** 管理、PATH 里只有版本管理器的 **shim**（如 `~/.local/share/mise/shims/node`），shim 目录旁并没有 npm；v1.4.22+ 会通过 `node -p process.execPath` 在 shim 后解析出真实二进制。如果仍失败（或想免去这次探测），把 `DSH_UC_NODE_EXE` 设为真实二进制，如 `mise which node` / `asdf which node`。
-- **重启启动器** — 自适应：在部署根下探测常见启动脚本名；web 端口读取运行中的 `webServer.port`。
+- **node / npm 可执行文件** — `resolveNodeExe()` 定位真实 node：`DSH_UC_NODE_EXE` 覆盖 → `npm_node_execpath` → `process.execPath`（若确实是 node）→ 常见安装目录 → PATH。这就是 DSH Desktop（Electron，`process.execPath` 是 electron.exe）能跑 npm 更新插件的原因；若你的桌面端把 node 打包在别处，设 `DSH_UC_NODE_EXE` 指向它即可。若你的 node 由 **mise / asdf / nvm** 管理、PATH 里只有版本管理器的 **shim**（如 `~/.local/share/mise/shims/node`），shim 目录旁并没有 npm；v1.4.22+ 会通过 `node -p process.execPath` 在 shim 后解析出真实二进制。如果仍失败（或想免去这次探测），把 `DSH_UC_NODE_EXE` 设为真实二进制，如 `mise which node` / `asdf which node`。v1.6.3 起 npm 搜索面更宽：node 旁、`node_modules_<major>`（Fedora/RHEL 的 `nodejs24-npm`）、`/usr/lib`、`/usr/local/lib`、`/opt/homebrew/lib`、`/usr/local/opt/npm/lib`、`$npm_config_prefix`，以及 `PATH` 上的每个 `npm` / `npm.cmd`（含 shim 背后的真实目标）。桌面端 App 若完全没有 npm，仍需自行安装（issue #32）。
+- **重启启动器** — 自适应：`DSH_UC_LAUNCHER` / `DSH_RESTART_LAUNCHER`，其次部署根下的常见启动脚本名（`DeepSeek Harness.cmd`、`start-dsh.cmd` …）；选中的启动器**带可见窗口**拉起，重启后的服务因此有控制台（v1.6.3——此前的隐藏拉起留下占着端口的孤儿进程，还吞掉了访问地址）。web 端口读取运行中的 `webServer.port`。
 - **调优环境变量** — `DSH_UC_UPDATE_PORT` 指定更新 worker 停止/启动/探测的端口（默认 `3080`）；`DSH_UC_RESTART_WINDOW_MS` 指定首次启动偏慢时继续观察的时长（默认 `150000`，观察期间进度记录持续刷新）。
 
 ## 平台与安装布局支持
@@ -122,6 +122,13 @@ New-Item -ItemType Junction `
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package.json` + `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json` + `main-snapshot` 里 `@deepseek-ai` 框架整树副本），主程序与插件都有对应回滚路由；主程序回滚在 `main-snapshot` 存在时直接从磁盘恢复，而不是从 registry 重新安装旧版本。
 
 ## 更新日志
+
+- **v1.6.3** — 升级后重启看得见、进度条按包数走、npm 探测覆盖发行版布局（issue #30 #31 #32）：
+  - **主程序升级后不再留下无控制台孤儿进程。** `startService()` 原以 `detached: true` + `stdio: "ignore"` + `windowsHide: true` 拉起服务——一个没有控制台的隐形实例：它活过更新 worker、继续占着 Web 端口，启动时打印的访问地址/token 随 stdout 一起丢弃；下次启动就会撞 `listen EADDRINUSE 127.0.0.1:3080`，并炸出一片「N required plugins did not activate」（`webserver` 是 required，整个插件图都组不起来）。现在重启优先走部署自带的启动器（`DSH_UC_LAUNCHER` / `DSH_RESTART_LAUNCHER` / `DeepSeek Harness.cmd` / `start-dsh.cmd` …）且**带可见窗口**；没有启动器时退回 `node … bin.js web`，同样可见，并在 ops 日志记下 `main-update-service-restart`。
+  - **进度条改为「已下载包数 / 总包数」。** 不再用依赖树时间爬坡、也不数 npm 的 HTTP 行（含元数据，会跑到真实进度前面）。下载/安装期间百分比 = `round(已完成 / 总数 * 100)`：200 个包下到 100 个就是 50%，198 个就是 99%；详情写「已下载 137/273 个包（50%）」。总数取自 npm dry-run 的「added N packages」或 lockfile；tarball 回退路径按已下载 tarball 同样计算。进度条不再回退，100% 留给「已完成」。
+  - **发行版布局与 shim 安装也能找到 npm（#30 #32）。** `npmCliCandidates()` 新增 `node_modules_<major>`（Fedora/RHEL 的 `nodejs24-npm`）、`/usr/lib`、`/usr/local/lib`、`/opt/homebrew/lib`、`/usr/local/opt/npm/lib` 与 `$npm_config_prefix`；`locateNpmCli()` 在放弃前会依次解析 `PATH` 上的每个 `npm`/`npm.cmd`（以及 shim 背后的真实目标），`ENPMCLI` 报错也列出搜索过的布局与 `DSH_UC_NODE_EXE` 逃生口。桌面端 App 若**完全没有** npm，插件更新仍无法进行——那需要安装 Node/npm 或等应用内 tarball 安装器（见 #32）。
+  - **插件清单只读「正在运行的那个 profile」（#31）。** `findCompositionFile()` 以前在无法判定时默认 `profiles/web/cordis.patch.yml`，于是宿主跑在别的 profile（桌面端的 `desktop`）时，面板读的是**另一个** profile 的 `node_modules`——永远显示 `dshmarket 1.60.0 → 1.65.0`，而运行中的 profile 已经是 1.65.0。现在 composition 与其 `node_modules` 先按 `DSH_PROFILE_DIR` / `DSH_PROFILE` 解析，并校验它属于本安装的 profiles 根。
+  - **测试**：`node --test "scripts/*.test.mjs"` 230 项全过，新增覆盖包数进度映射、npm fetch 解析、启动器选择与可见性、运行中 profile 解析、Fedora `node_modules_<major>` 布局；进度 E2E 时间线按新契约断言。
 
 - **v1.6.2** — Linux/macOS 可用一键主程序更新；插件更新不再被 pnpm 重装打回（issue #27 #28 #29，PR #26）：
   - **POSIX 主程序更新（#29，取代 PR #19）**：更新 worker、服务停止/启动探测与重启路由不再假定 Windows PowerShell。worker 改为直接 `node <脚本>`（detached）拉起，并接上 `error` 监听——spawn 失败会释放更新锁、写入真实的 `error` 进度记录；此前这种失败是静默的，横幅会永远停在 8%。POSIX 下找端口进程用 `ss -H -tlnp "sport = :<端口>"`，退化时用 `lsof -tiTCP:<端口> -sTCP:LISTEN`，绝不扫描全部监听；只有 `/proc/<pid>/cmdline` 读不到或确实写着 node/dsh 时才杀该 PID，用 `SIGKILL` 取代 `taskkill`。`scripts/restart-watchdog.sh` 与 `restart-watchdog.ps1` 对齐（同样的环境变量、同样的结果 JSON），重启顺序为 node argv → `systemctl --user restart dsh-web.service` → 启动器路径（作为**单个**参数传入）。Windows 行为完全未变（`Get-NetTCPConnection`、`taskkill /T /F`、PowerShell `Start-Process`）。既没有 `ss` 也没有 `lsof` 的机器仍以 `501 E_PLATFORM_UNSUPPORTED` 快速失败。
@@ -144,13 +151,6 @@ New-Item -ItemType Junction `
   - **文档写明真实限制。** 自挂载逻辑运行在插件内部，也就是只在 profile 组合成功之后才会执行——因此它
     **无法**修复"首次启动就解析不到插件"那一次。全新安装（以及每新增一个 profile）**必须**手工建链接 +
     写声明；此后的维护才由插件自己负责。此前的措辞暗示"重启一次可自行修复"，而那恰恰是它修不了的情形。
-
-- **v1.6.0** — 插件自行挂载，dsh `0.1.6-alpha.2` 不再加载失败：
-  - **根因**：`0.1.6-alpha.2` 把 profile 解析默认值从 `options.resolutionMode ?? "link"` 改成 `?? "runtime"`。于是 `PluginPackages` 收到的配置由 `{}` 变为 `{ generation, behavior: "enforce" }`，`routeScoped` 把 `$DSH_HOME/profiles/node_modules` 登记为**受管共享目录**并在遍历搜索路径时直接 `break` 掉，不再检索。该目录从此只能服务"解析代"表里的条目——部署依赖闭包与被选中的 bundle 闭包——而第三方插件两者皆不属于，于是解析落到 `after-fallback`、以 `$DSH_HOME/package.json` 为基准，最终 `ERR_MODULE_NOT_FOUND`，且发生在 **Web 服务绑定端口之前**。dsh 还会把报错里的 importer 路径改写成 profile 目录，所以看起来像"包就在旁边却说找不到"。
-  - **修复——插件自我保证挂载**（`ensurePluginMount`，启动时执行，并暴露为 `GET /dsh-update-checker/mount.json`，结果同时作为 `mount` 字段出现在 `status.json`）：为每个 profile 创建/修复 `profiles/<profile>/node_modules/dsh-update-checker` → `profiles/node_modules` 下真实包的 **junction**，并为每个 harness profile 写入 `dependencies` 声明。两半都必需：链接让 `routeScoped` 在共享目录**之前**就命中候选（设计文档原文 "pnpm-managed entries in the profile's `node_modules` resolve first"），而声明是 dsh 的 `readProfilePlugins` 与本插件 `findDeclaringProfiles`/`persistPluginUpdate` 判定归属的依据——缺它插件会一直把自己报成需要更新。必须用 junction 而非副本：副本会让 `import.meta.url` 落到 `profiles/<profile>/node_modules`，`pickDshHome` 认不出 Harness home，自我定位漂移，`@deepseek-ai/*` 同步也会写错位置。在 `"link"` 模式下同样正确（该模式不装路由钩子，原生解析照样命中这份链接），因此不是"看版本下菜"的临时手段。
-  - **构造上安全**：幂等；已有声明绝不覆盖（你刻意设置的 `file:`/`link:` 会被保留并记为 `foreignDecl`）；实体目录只有在 `package.json` 的 `name` 能证明是本插件自己的副本时才回收；其余情况报告 `refusing to replace` 并原样留下；只写 harness profile；插件若装在 `profiles/node_modules` 之外（npm `-g`、部署根）则安全跳过。
-  - **`runSync` 不再往 profile 里写实体目录**：`lib/index.js` 中主程序同步对 `@deepseek-ai/*` 框架树仍在用 `cp(src, dst, { recursive: true, force: true })`——正是 v1.5.0 在更新 worker 里修掉的那条写入路径，也正是会让 `healProfilesModuleFallback`/`ensureSymlink` 在下一次启动抛 `exists and is not a symlink or dsh-managed module proxy` 的那条。现在它改走同一套"可证明才回收"的逻辑建 junction（Windows）/ 目录符号链接（POSIX），两条同步路径不会再互相矛盾。
-  - **回归测试**：`scripts/integration-plugin-mount.test.mjs` 用真实导出函数在临时 Harness home 上跑十个场景——缺失链接被建立（且 realpath 仍位于 `profiles/node_modules` 下）、残留实体副本被回收、已正确的链接保持字节不变、同名外来目录绝不被删、悬空链接被重建、已有/外来声明被保留、非 harness profile 只建链接不写声明、树外安装为空操作、`runSync` 写链接且仍拒绝替换外来包。
 
 ## 开发
 

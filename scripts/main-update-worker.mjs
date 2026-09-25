@@ -26,7 +26,7 @@ import https from "node:https";
 import { gunzipSync } from "node:zlib";
 
 
-import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock, collectPortPids, servicePidsOnPort, portAlive, killPid, probePortOpen } from "../lib/index.js";
+import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock, collectPortPids, servicePidsOnPort, portAlive, killPid, probePortOpen, findLauncherFile, buildServiceRelaunch, countNpmTarballFetches, parseNpmPackageCount, packageProgressPercent } from "../lib/index.js";
 
 const ROOT = process.env.DSH_UC_UPDATE_ROOT;
 const TARGET = process.env.DSH_UC_UPDATE_TARGET;
@@ -53,7 +53,10 @@ let progressFrozen = false;
 
 async function writeProgress(patch) {
   try {
-    progressCache = { running: true, workerPid: process.pid, ...(progressCache || {}), ...patch, at: Date.now() };
+    const merged = { running: true, workerPid: process.pid, ...(progressCache || {}), ...patch, at: Date.now() };
+    const previous = progressCache && Number.isFinite(progressCache.percent) ? progressCache.percent : null;
+    if (Number.isFinite(merged.percent) && previous !== null) merged.percent = Math.max(previous, merged.percent);
+    progressCache = merged;
     await writeFile(PROGRESS_FILE, JSON.stringify(progressCache, null, 2), "utf8");
   } catch {
     
@@ -168,7 +171,7 @@ function runNpm(args, { cwd, timeoutMs = 600000, onProgress } = {}) {
       stderr += s;
       httpCount += (s.match(/npm http /g) || []).length;
       markActivity();
-      if (onProgress) onProgress({ httpCount, stderrTail: stderr.slice(-400) });
+      if (onProgress) onProgress({ httpCount, tarballs: countNpmTarballFetches(stderr), stderrTail: stderr.slice(-400) });
     });
     child.on("error", (e) => { clearTimeout(timer); clearInterval(deadlockTimer); reject(e); });
     child.on("close", (code) => {
@@ -344,11 +347,19 @@ async function stopService() {
 async function startService() {
   const port = PORT;
   const bin = join(ROOT, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+  const launcher = await findLauncherFile(ROOT).catch(() => null);
+  const plan = buildServiceRelaunch(process.platform, {
+    deployRoot: ROOT,
+    nodeExe: resolveNodeExe(),
+    launcher,
+    entry: launcher ? null : bin,
+  }) || { file: resolveNodeExe(), args: [bin, "web"], cwd: ROOT, detached: true, method: "node" };
   let spawnError = null;
+  let child = null;
   try {
-    const child = spawn(resolveNodeExe(), [bin, "web"], {
-      cwd: ROOT,
-      windowsHide: true,
+    child = spawn(plan.file, plan.args, {
+      cwd: plan.cwd || ROOT,
+      windowsHide: false,
       detached: true,
       stdio: "ignore",
     });
@@ -359,6 +370,14 @@ async function startService() {
   } catch (err) {
     return { ok: false, error: `launcher spawn failed: ${err.message}` };
   }
+  await opsLog({
+    op: "main-update-service-restart",
+    via: plan.method,
+    launcher: launcher || null,
+    command: plan.file,
+    pid: child && child.pid ? child.pid : null,
+    visible: true,
+  });
   if (spawnError) return { ok: false, error: `launcher spawn failed: ${spawnError.message}` };
   const deadline = Date.now() + 30000;
   let pid = null;
@@ -865,22 +884,23 @@ async function main() {
   let cacheDir = null;
   try {
     
-    const DL_START = 10;
-    const DL_END = 55;
+    const PLAN_PERCENT = 8;
+    let planPercent = PLAN_PERCENT;
     let dlLabel = "正在检查依赖树（npm dry-run，约 1-3 分钟）…";
     let dlDetail = null;
-    const dlTicker = startProgressTicker(DL_START, DL_END, 180000, (pct, sec) => ({
+    const dlTicker = startProgressTicker(PLAN_PERCENT, PLAN_PERCENT, 180000, (pct, sec) => ({
       phase: "download",
       label: dlLabel,
-      percent: pct,
+      percent: planPercent,
       detail: dlDetail || `已等待 ${sec}s`,
     }));
     let npmReady = false;
+    let dryRunPackages = null;
     try {
-      
-      await runNpm([...baseArgs, "--dry-run"], { cwd: ROOT, timeoutMs: 150000 });
+      const dry = await runNpm([...baseArgs, "--dry-run"], { cwd: ROOT, timeoutMs: 150000 });
       npmReady = true;
-      await opsLog({ op: "main-npm-dryrun-ok", type });
+      dryRunPackages = parseNpmPackageCount(`${(dry && dry.stdout) || ""}${(dry && dry.stderr) || ""}`);
+      await opsLog({ op: "main-npm-dryrun-ok", type, packages: dryRunPackages });
     } catch (err) {
       await opsLog({
         op: "main-npm-dryrun-fail",
@@ -895,13 +915,13 @@ async function main() {
       dlLabel = "正在下载新版本（服务不中断）…";
       const todo = await collectUpdateTodo();
       const dl = await downloadTarballsToCache(todo, cacheDir, (p) => {
-        const percent = Math.min(DL_END, DL_START + Math.round((p.current / Math.max(1, p.total)) * (DL_END - DL_START)));
-        dlTicker.setFloor(percent);
-        dlDetail = `已下载 ${p.current}/${p.total} 个包（${p.name}）`;
+        const percent = packageProgressPercent(p.current, p.total) ?? PLAN_PERCENT;
+        planPercent = Math.max(planPercent, percent);
+        dlDetail = `已下载 ${p.current}/${p.total} 个包（${planPercent}%）（${p.name}）`;
         writeProgress({
           phase: "download",
           label: dlLabel,
-          percent,
+          percent: planPercent,
           detail: dlDetail,
           count: { done: p.current, total: p.total },
         }).catch(() => {});
@@ -928,7 +948,7 @@ async function main() {
 
     await dlTicker.stop();
 
-    await writeProgress({ phase: "stop", label: "下载完成，正在停止服务…", percent: 58 });
+    await writeProgress({ phase: "stop", label: "正在停止服务…", percent: 9 });
     const stop = await stopService();
     if (!stop.ok) return await fail(`failed to stop service: ${stop.error}`, "E_STOP");
     await opsLog({ op: "main-update-stop-service", ok: true });
@@ -937,29 +957,31 @@ async function main() {
     let output = "";
     if (installVia === "npm") {
       const lockCount = await countLockPackages(ROOT);
-      const total = lockCount && lockCount > 0 ? lockCount : null;
+      const total = Math.max(dryRunPackages || 0, lockCount || 0) || null;
       const instLabel = "正在安装新版本（约 2-4 分钟，可安全离开此页面）…";
-      const instTicker = startProgressTicker(62, 78, 150000, (pct, sec) => ({
+      let instPercent = packageProgressPercent(0, total) ?? 10;
+      let lastFetched = 0;
+      const instDetail = (done) => (total ? `已下载 ${done}/${total} 个包（${instPercent}%）` : `已下载 ${done} 个包，安装进行中`);
+      const instTicker = startProgressTicker(instPercent, instPercent, 150000, (pct, sec) => ({
         phase: "install",
         label: instLabel,
-        percent: pct,
-        detail: total ? null : `npm 安装中，已等待 ${sec}s`,
+        percent: instPercent,
+        detail: total ? instDetail(lastFetched) : `npm 安装中，已等待 ${sec}s`,
       }));
-      await writeProgress({ phase: "install", label: instLabel, percent: 62, detail: total ? `待解析 ${total} 个包` : "npm 安装中…" });
+      await writeProgress({ phase: "install", label: instLabel, percent: instPercent, detail: total ? `已下载 0/${total} 个包（${instPercent}%）` : "npm 安装中…", count: { done: 0, total } });
       await resetStaleLockfilesIfNeeded(TARGET);
       const installRes = await installWithFileLockRetry(
         () => runNpm(baseArgs, { cwd: ROOT, timeoutMs: 600000, onProgress: (p) => {
-          const done = total ? Math.min(p.httpCount, total) : p.httpCount;
-          const signal = total
-            ? 62 + Math.round((done / total) * 16)
-            : 62 + Math.floor(p.httpCount / 40);
-          instTicker.setFloor(signal);
+          const fetched = total ? Math.min(p.tarballs || 0, total) : (p.tarballs || 0);
+          lastFetched = Math.max(lastFetched, fetched);
+          const percent = packageProgressPercent(lastFetched, total);
+          if (percent !== null) instPercent = Math.max(instPercent, percent);
           writeProgress({
             phase: "install",
             label: instLabel,
-            percent: Math.max(62, Math.min(78, signal)),
-            detail: total ? `已解析 ${done}/${total} 个包` : `已解析 ${done} 个包，安装进行中`,
-            count: { done, total },
+            percent: instPercent,
+            detail: instDetail(lastFetched),
+            count: { done: lastFetched, total },
           }).catch(() => {});
         } }),
         {
@@ -970,7 +992,7 @@ async function main() {
             await writeProgress({
               phase: "install",
               label: "检测到服务被拉起/文件占用，正在清理后重试…",
-              percent: 72,
+              percent: instPercent,
               detail: `第 ${attempt}/${3} 次重试`,
             });
           },
@@ -994,21 +1016,21 @@ async function main() {
       const guard = await ensureServiceStopped(15000);
       if (!guard.ok) return await fail(`service could not be kept stopped: ${guard.error}`, "E_STOP");
       const total = await countLockPackages(ROOT);
-      const applyTicker = startProgressTicker(64, 80, 120000, (pct, sec) => ({
+      let applyPercent = packageProgressPercent(0, total) ?? 10;
+      const applyTicker = startProgressTicker(applyPercent, applyPercent, 120000, (pct, sec) => ({
         phase: "install",
         label: "正在应用新版本…",
-        percent: pct,
+        percent: applyPercent,
         detail: `正在写入文件，已等待 ${sec}s`,
       }));
       const ex = await extractTreeFromCache(cacheDir, (p) => {
-        const percent = Math.max(64, Math.min(80, 64 + Math.round((p.current / Math.max(1, p.total)) * 16)));
-        applyTicker.setFloor(percent);
+        const percent = packageProgressPercent(p.current, p.total);
+        if (percent !== null) applyPercent = Math.max(applyPercent, percent);
         writeProgress({
           phase: "install",
           label: "正在应用新版本…",
-          percent,
+          percent: applyPercent,
           detail: `已应用 ${p.current}/${p.total} 个包（${p.name}）`,
-          count: { done: p.current, total: p.total },
         }).catch(() => {});
       });
       await applyTicker.stop();
@@ -1030,10 +1052,10 @@ async function main() {
     }
 
     
-    const verifyTicker = startProgressTicker(84, 87, 8000, (pct, sec) => ({
+    const verifyTicker = startProgressTicker(99, 99, 8000, (pct, sec) => ({
       phase: "verify",
       label: "校验安装完整性…",
-      percent: pct,
+      percent: 99,
       detail: sec > 4 ? `已校验 ${sec}s` : null,
     }));
     const verify = await verifyTree();
@@ -1048,16 +1070,16 @@ async function main() {
       );
     }
 
-    await writeProgress({ phase: "sync-decl", label: "同步版本声明…", percent: 88 });
+    await writeProgress({ phase: "sync-decl", label: "同步版本声明…", percent: 99 });
     await syncDeclaration();
     await syncProfilesToDeploy();
     await verifyTicker.stop();
 
     
-    const restartTicker = startProgressTicker(92, 95, 20000, (pct, sec) => ({
+    const restartTicker = startProgressTicker(99, 99, 20000, (pct, sec) => ({
       phase: "restart",
       label: "正在重启 dsh 服务并等待端口就绪…",
-      percent: pct,
+      percent: 99,
       detail: `已等待 ${sec}s`,
     }));
     let startRes;
@@ -1066,7 +1088,7 @@ async function main() {
     } finally {
       await restartTicker.stop();
     }
-    await writeProgress({ phase: "health", label: "健康检查…", percent: 96 });
+    await writeProgress({ phase: "health", label: "健康检查…", percent: 99 });
     let health = await healthCheck();
     const restartWatchStartedAt = Date.now();
     let restartsSpawned = 1;
@@ -1076,7 +1098,7 @@ async function main() {
       await writeProgress({
         phase: "restart-pending",
         label: "安装已完成，正在等待服务恢复…",
-        percent: Math.min(99, 96 + round),
+        percent: 99,
         detail: `已等待 ${waited}s（大版本首次启动可能较慢，安装与同步均已成功）`,
       });
     };
@@ -1090,10 +1112,10 @@ async function main() {
       }
       if (restartsSpawned < RESTART_MAX_SPAWNS) {
         restartsSpawned += 1;
-        const spawnTicker = startProgressTicker(98, 98, 1000, () => ({
+        const spawnTicker = startProgressTicker(99, 99, 1000, () => ({
           phase: "restart-pending",
           label: "安装已完成，正在重新拉起服务…",
-          percent: 98,
+          percent: 99,
           detail: `第 ${restartsSpawned}/${RESTART_MAX_SPAWNS} 次尝试`,
         }));
         try {

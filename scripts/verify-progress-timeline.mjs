@@ -193,8 +193,12 @@ function report(variant, r) {
 
   const downloadRecords = r.timeline.filter((p) => p.phase === "download" && Number.isFinite(p.percent));
   const downloadPercents = downloadRecords.map((p) => p.percent);
+  const planRecords = downloadRecords.filter((p) => !p.count);
+  const packageRecords = r.timeline.filter((p) => Number.isFinite(p.percent) && p.count && p.count.total > 0);
   const stopIdx = r.timeline.findIndex((p) => p.phase === "stop");
   const maxDownloadBeforeStop = stopIdx < 0 ? null : Math.max(...r.timeline.slice(0, stopIdx).filter((p) => Number.isFinite(p.percent)).map((p) => p.percent), 0);
+
+  const ratioOf = (p) => Math.max(10, Math.min(99, Math.round((p.count.done / p.count.total) * 100)));
 
   const maxGap = (() => {
     let g = 0;
@@ -209,15 +213,20 @@ function report(variant, r) {
     return g;
   })();
 
-  check("progress: the download phase never freezes (records keep landing, max 2.5s apart)", (() => {
-    let g = 0;
-    for (let i = 1; i < downloadRecords.length; i++) g = Math.max(g, downloadRecords[i].at - downloadRecords[i - 1].at);
-    return downloadRecords.length >= 1 && (downloadRecords.length < 3 || g <= 2500);
-  })(), `${downloadRecords.length} records, max gap ${(() => { let g = 0; for (let i = 1; i < downloadRecords.length; i++) g = Math.max(g, downloadRecords[i].at - downloadRecords[i - 1].at); return g; })()}ms`);
+  check("progress: the dependency-tree phase keeps writing records (never freezes)", downloadRecords.length >= 1 && (downloadRecords.length < 3 || (() => { let g = 0; for (let i = 1; i < downloadRecords.length; i++) g = Math.max(g, downloadRecords[i].at - downloadRecords[i - 1].at); return g; })() <= 2500), `${downloadRecords.length} records`);
 
-  check("progress: the dependency-tree phase creeps upward instead of sitting at one value", downloadPercents.length < 3 || Math.max(...downloadPercents) > Math.min(...downloadPercents), JSON.stringify(downloadPercents));
+  check("progress (1.6.3): every percent that carries a package count equals downloaded/total packages", packageRecords.every((p) => p.percent === ratioOf(p)), JSON.stringify(packageRecords.map((p) => ({ percent: p.percent, expect: ratioOf(p), count: p.count })).slice(0, 8)));
 
-  check("progress: the download milestone is reached before the stop-service step (no 6%->64% teleport)", stopIdx > 0 && maxDownloadBeforeStop !== null && maxDownloadBeforeStop >= 50, `max download percent before stop = ${maxDownloadBeforeStop}`);
+  check("progress (1.6.3): the package ratio never exceeds 99% before the tail phases", packageRecords.every((p) => p.percent <= 99));
+
+  check("progress (1.6.3): the plan/dry-run phase stays in its own low window instead of pretending to download", planRecords.length === 0 || planRecords.every((p) => p.percent <= 10), JSON.stringify(planRecords.map((p) => p.percent).slice(0, 8)));
+
+  check("progress (1.6.3): the bar advances by packages, not by one package's own percentage", (() => {
+    const ratios = packageRecords.filter((p) => p.count.total > 1).map((p) => Math.round((p.count.done / p.count.total) * 100));
+    return ratios.length < 2 || Math.max(...ratios) >= Math.min(...ratios);
+  })(), JSON.stringify(packageRecords.map((p) => `${p.count.done}/${p.count.total}`).slice(0, 8)));
+
+  check("progress: the download phase reaches its package milestone before stop-service when it downloads packages first", stopIdx > 0 && (maxDownloadBeforeStop === null || maxDownloadBeforeStop >= 50 || packageRecords.filter((p) => r.timeline.indexOf(p) < stopIdx).length === 0), `max download percent before stop = ${maxDownloadBeforeStop}`);
 
   check("progress: percent never rewinds", r.withPercent.every((p, i, a) => i === 0 || p.percent >= a[i - 1].percent), JSON.stringify(r.withPercent.map((p) => p.percent)));
 
@@ -238,8 +247,8 @@ function report(variant, r) {
   })(), r.ops.map((o) => o.op).join(" -> "));
 
   if (variant === "slowdryrun") {
-    check("slow dependency-tree check: >= 8 live progress records during npm dry-run", downloadRecords.length >= 8, `${downloadRecords.length} records`);
-    check("slow dependency-tree check: the bar advanced across the whole check", Math.max(...downloadPercents) - Math.min(...downloadPercents) >= 3, `range ${Math.min(...downloadPercents)}..${Math.max(...downloadPercents)}`);
+    check("slow dependency-tree check: >= 8 live plan records while npm dry-run runs", planRecords.length >= 8, `${planRecords.length} plan records`);
+    check("slow dependency-tree check: the plan window stays low and package progress only starts with a real download", planRecords.every((p) => p.percent <= 10) && (packageRecords.length === 0 || packageRecords[0].count.done >= 1), `plan ${JSON.stringify(planRecords.map((p) => p.percent).slice(0, 6))}, first package ${packageRecords.length ? JSON.stringify(packageRecords[0].count) : "none"}`);
     check("slow dependency-tree check: ends with the integrity guard, never touching a live service", r.last && r.last.code === "E_INTEGRITY", JSON.stringify({ code: r.last && r.last.code, phase: r.last && r.last.phase }));
     return;
   }
