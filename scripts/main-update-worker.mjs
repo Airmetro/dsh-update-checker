@@ -19,6 +19,7 @@ import { writeFile, appendFile, rm, mkdir, mkdtemp, readdir, lstat, readFile, cp
 import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import http from "node:http";
@@ -26,7 +27,7 @@ import https from "node:https";
 import { gunzipSync } from "node:zlib";
 
 
-import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock, collectPortPids, servicePidsOnPort, portAlive, killPid, probePortOpen, findLauncherFile, buildServiceRelaunch, countNpmTarballFetches, parseNpmPackageCount, packageProgressPercent } from "../lib/index.js";
+import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock, collectPortPids, servicePidsOnPort, portAlive, killPid, probePortOpen, findLauncherFile, buildServiceRelaunch, countNpmTarballFetches, parseNpmPackageCount, packageProgressPercent, satisfies, compareVersions as compareSemverVersions } from "../lib/index.js";
 
 const ROOT = process.env.DSH_UC_UPDATE_ROOT;
 const TARGET = process.env.DSH_UC_UPDATE_TARGET;
@@ -396,7 +397,7 @@ async function startService() {
 }
 
 
-async function verifyTree() {
+async function verifyTree(expectations = []) {
   const problems = [];
   let packages = [];
   try {
@@ -477,6 +478,23 @@ async function verifyTree() {
       }
     }
     if (!entry) problems.push(`${p.name} empty shell (no lib entry file)`);
+  }
+  const verifyBase = join(ROOT, "package.json");
+  for (const want of Array.isArray(expectations) ? expectations : []) {
+    if (!want || !want.name || !want.version) continue;
+    let found = null;
+    if (want.dir) {
+      const manifest = await loadManifestAt(want.dir);
+      if (manifest && manifest.name === want.name) found = { dir: want.dir, version: String(manifest.version || "") };
+    }
+    if (!found) found = await locateInstalled(verifyBase, want.name);
+    if (!found) {
+      problems.push(`required package missing: ${want.name}@${want.version}`);
+      continue;
+    }
+    if (found.version !== String(want.version)) {
+      problems.push(`required package version mismatch: ${want.name} ${found.version} != ${want.version}`);
+    }
   }
   return { ok: problems.length === 0, problems };
 }
@@ -651,28 +669,414 @@ async function rollbackFromBackup() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 
+const TARBALL_MAX_BYTES = 200 * 1024 * 1024;
+const TARBALL_IDLE_TIMEOUT_MS = 20000;
+const TARBALL_ATTEMPT_TIMEOUTS_MS = [60000, 90000, 180000];
+const TARBALL_ATTEMPTS = 3;
+const TARBALL_CONCURRENCY = 6;
+
+const REGISTRY_BASE = String(process.env.DSH_UC_UPDATE_REGISTRY || "https://registry.npmjs.org").replace(/\/+$/, "");
+const METADATA_MAX_BYTES = 64 * 1024 * 1024;
+const METADATA_ATTEMPTS = 3;
+const METADATA_ATTEMPT_TIMEOUTS_MS = [30000, 45000, 60000];
+const CLOSURE_LANES = 8;
+const CLOSURE_MAX_PACKAGES = 4000;
+const CLOSURE_DEADLINE_MS = Number(process.env.DSH_UC_UPDATE_CLOSURE_DEADLINE_MS) || 300000;
+const TARBALL_PLAN_FILE = "tarball-plan.json";
+const DEPLOY_NODE_MODULES = join(ROOT, "node_modules");
+
+function fixedVersion(text) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(text || "").trim());
+  if (!m) return null;
+  return `${m[1]}.${m[2]}.${m[3]}${m[4] ? "-" + m[4] : ""}`;
+}
+
+function highestSatisfying(versions, range) {
+  let best = null;
+  for (const raw of versions) {
+    if (!satisfies(raw, range)) continue;
+    if (best === null || compareSemverVersions(raw, best) > 0) best = raw;
+  }
+  return best;
+}
+
+function registryPath(name) {
+  const text = String(name);
+  return text.startsWith("@") ? text.replace("/", "%2F") : text;
+}
+
+function registryTarballUrl(name, version) {
+  return `${REGISTRY_BASE}/${registryPath(name)}/-/${String(name).split("/").pop()}-${version}.tgz`;
+}
+
+async function fetchRegistryJson(url, accept) {
+  let last = null;
+  for (let attempt = 0; attempt < METADATA_ATTEMPTS; attempt++) {
+    try {
+      const buf = await httpGetBuffer(
+        url,
+        TARBALL_IDLE_TIMEOUT_MS,
+        METADATA_ATTEMPT_TIMEOUTS_MS[Math.min(attempt, METADATA_ATTEMPT_TIMEOUTS_MS.length - 1)],
+        METADATA_MAX_BYTES,
+        accept ? { Accept: accept } : null
+      );
+      return JSON.parse(buf.toString("utf8"));
+    } catch (err) {
+      last = err;
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  throw last;
+}
+
+async function loadManifestAt(dir) {
+  return await readJson(join(dir, "package.json"));
+}
+
+async function locateInstalled(baseFile, name) {
+  try {
+    const req = createRequire(baseFile);
+    let dir = dirname(req.resolve(name));
+    for (let i = 0; i < 8 && dir && dir.length > 3; i++) {
+      const manifest = await loadManifestAt(dir);
+      if (manifest && manifest.name === name) return { dir, version: String(manifest.version || ""), manifest };
+      const up = dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+  } catch {
+  }
+  const direct = join(DEPLOY_NODE_MODULES, name);
+  const manifest = await loadManifestAt(direct);
+  if (manifest && manifest.name === name) return { dir: direct, version: String(manifest.version || ""), manifest };
+  return null;
+}
+
+function manifestDependencies(manifest) {
+  const out = [];
+  for (const [name, range] of Object.entries((manifest && manifest.dependencies) || {})) {
+    out.push({ name, range: String(range), optional: false });
+  }
+  for (const [name, range] of Object.entries((manifest && manifest.optionalDependencies) || {})) {
+    out.push({ name, range: String(range), optional: true });
+  }
+  return out;
+}
+
+function listAllows(list, value) {
+  if (!Array.isArray(list) || !list.length) return true;
+  let allowed = false;
+  for (const raw of list) {
+    const text = String(raw);
+    const negated = text.startsWith("!");
+    const target = negated ? text.slice(1) : text;
+    if (target !== "any" && target !== value) continue;
+    if (negated) return false;
+    allowed = true;
+  }
+  return allowed;
+}
+
+function platformAllowed(manifest) {
+  const oses = (manifest && manifest.os) || [];
+  const cpus = (manifest && manifest.cpu) || [];
+  return listAllows(oses, process.platform) && listAllows(cpus, process.arch);
+}
+
+function needsBuildScript(manifest) {
+  const scripts = (manifest && manifest.scripts) || {};
+  return Boolean(scripts.preinstall || scripts.install || scripts.postinstall);
+}
+
+async function rootDependencySeeds() {
+  const manifest = await readJson(join(ROOT, "package.json"));
+  const seeds = [];
+  for (const [name, range] of Object.entries((manifest && manifest.dependencies) || {})) {
+    if (name === PACKAGE) continue;
+    seeds.push({ name, range: String(range) });
+  }
+  seeds.push({ name: PACKAGE, range: TARGET });
+  return seeds;
+}
+
+async function resolveTargetClosure() {
+  const packumentCache = new Map();
+  const manifestCache = new Map();
+  const plan = new Map();
+  const keep = new Map();
+  const stale = [];
+  const skipped = [];
+  const buildScripts = [];
+  const failed = [];
+  const seen = new Set();
+  const targets = new Map();
+  const pending = new Map();
+  const deadline = Date.now() + CLOSURE_DEADLINE_MS;
+
+  for (const seed of await rootDependencySeeds()) {
+    pending.set(`${seed.name}@${seed.range}`, { name: seed.name, range: seed.range, baseFile: join(ROOT, "package.json"), strict: true });
+  }
+
+  const packumentFor = async (name) => {
+    if (!packumentCache.has(name)) {
+      packumentCache.set(
+        name,
+        await fetchRegistryJson(`${REGISTRY_BASE}/${registryPath(name)}`, "application/vnd.npm.install-v1+json")
+      );
+    }
+    return packumentCache.get(name);
+  };
+
+  const manifestFor = async (name, version, packument) => {
+    const key = `${name}@${version}`;
+    if (manifestCache.has(key)) return manifestCache.get(key);
+    let manifest = null;
+    if (packument && packument.versions && packument.versions[version]) manifest = packument.versions[version];
+    if (!manifest) manifest = await fetchRegistryJson(`${REGISTRY_BASE}/${registryPath(name)}/${version}`, null);
+    manifestCache.set(key, manifest);
+    return manifest;
+  };
+
+  const remember = (discovered, deps, baseFile, strict) => {
+    for (const dep of deps) {
+      const key = `${dep.name}@${dep.range}`;
+      if (seen.has(key) || pending.has(key) || discovered.has(key)) continue;
+      discovered.set(key, { name: dep.name, range: dep.range, baseFile, strict });
+    }
+  };
+
+  while (pending.size && seen.size < CLOSURE_MAX_PACKAGES) {
+    if (Date.now() > deadline) break;
+    const batch = [...pending.values()].slice(0, CLOSURE_LANES);
+    for (const item of batch) pending.delete(`${item.name}@${item.range}`);
+    const discovered = new Map();
+    await Promise.all(
+      batch.map(async (item) => {
+        const key = `${item.name}@${item.range}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        try {
+          const present = await locateInstalled(item.baseFile, item.name);
+          const internal = item.name === PACKAGE || item.name.startsWith("@deepseek-ai/");
+          if (present) {
+            const satisfied = satisfies(present.version, item.range);
+            if (satisfied || (!internal && !item.strict)) {
+              if (satisfied) {
+                if (!keep.has(item.name)) {
+                  keep.set(item.name, { name: item.name, version: present.version, dir: present.dir, action: "keep" });
+                }
+              } else {
+                stale.push({ name: item.name, version: present.version, range: item.range });
+              }
+              remember(discovered, manifestDependencies(present.manifest), join(present.dir, "package.json"), false);
+              return;
+            }
+          }
+          let version = fixedVersion(item.range);
+          let packument = null;
+          if (!version) {
+            packument = await packumentFor(item.name);
+            version = highestSatisfying(Object.keys(packument.versions || {}), item.range);
+            if (!version) throw new Error(`no published version satisfies ${item.name}@${item.range}`);
+          }
+          const previous = targets.get(item.name);
+          if (previous && previous !== version) {
+            await opsLog({ op: "main-tarball-plan-conflict", pkg: item.name, kept: previous, wanted: version, range: item.range });
+            return;
+          }
+          targets.set(item.name, version);
+          const manifest = await manifestFor(item.name, version, packument);
+          if (!platformAllowed(manifest)) {
+            skipped.push({ name: item.name, action: "skip-platform", version });
+            return;
+          }
+          if (needsBuildScript(manifest) && !internal) {
+            if (present) {
+              skipped.push({ name: item.name, action: "skip-build", version, localVersion: present.version });
+              return;
+            }
+            buildScripts.push({ name: item.name, version });
+          }
+          plan.set(item.name, {
+            name: item.name,
+            version,
+            localVersion: present ? present.version : null,
+            action: present ? "update" : "install",
+          });
+          remember(discovered, manifestDependencies(manifest), join(ROOT, "package.json"), true);
+        } catch (err) {
+          const message = String((err && err.message) || err);
+          failed.push({ name: item.name, range: item.range, error: message });
+          await opsLog({ op: "main-tarball-metadata-failed", pkg: item.name, range: item.range, error: truncate(message, 300) });
+        }
+      })
+    );
+    for (const [key, item] of discovered) pending.set(key, item);
+  }
+
+  return {
+    plan,
+    keep,
+    stale,
+    skipped,
+    buildScripts,
+    failed,
+    incomplete: pending.size > 0 || failed.length > 0,
+    scanned: seen.size,
+  };
+}
+
+function closureExpectations(closure) {
+  const wants = new Map();
+  for (const entry of (closure && closure.keep ? closure.keep.values() : [])) {
+    wants.set(entry.name, { name: entry.name, version: entry.version, dir: entry.dir || null });
+  }
+  for (const entry of (closure && closure.plan ? closure.plan.values() : [])) {
+    wants.set(entry.name, { name: entry.name, version: entry.version, dir: null });
+  }
+  return [...wants.values()];
+}
+
+function planFileName(name, version) {
+  return `${String(name).replace(/[@/]/g, "_")}-${version}.tgz`;
+}
+
+async function planTarballUpdate() {
+  const startedAt = Date.now();
+  let closure;
+  try {
+    closure = await resolveTargetClosure();
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    closure = {
+      plan: new Map(),
+      keep: new Map(),
+      stale: [],
+      skipped: [],
+      buildScripts: [],
+      failed: [{ name: "*", range: "*", error: message }],
+      incomplete: true,
+      scanned: 0,
+    };
+  }
+  const plan = new Map(closure.plan);
+  let baseline = [];
+  try {
+    baseline = await collectUpdateTodo();
+  } catch {
+    baseline = [];
+  }
+  const skippedNames = new Set(closure.skipped.map((s) => s.name));
+  let baselineAdded = 0;
+  for (const short of baseline) {
+    const name = String(short).startsWith("@") ? String(short) : `@deepseek-ai/${short}`;
+    if (plan.has(name) || skippedNames.has(name)) continue;
+    plan.set(name, { name, version: TARGET, localVersion: null, action: "update", baseline: true });
+    baselineAdded += 1;
+  }
+  const items = [...plan.values()].map((entry) => ({ ...entry, file: planFileName(entry.name, entry.version) }));
+  const summary = {
+    target: TARGET,
+    scanned: closure.scanned,
+    keep: closure.keep.size,
+    install: items.filter((i) => i.action === "install").length,
+    update: items.filter((i) => i.action === "update").length,
+    baseline: baselineAdded,
+    planned: items.length,
+    skippedPlatform: closure.skipped.filter((s) => s.action === "skip-platform").map((s) => s.name),
+    skippedBuild: closure.skipped.filter((s) => s.action === "skip-build").map((s) => s.name),
+    buildScriptInstall: closure.buildScripts,
+    stale: closure.stale.slice(0, 40),
+    failed: closure.failed,
+    incomplete: closure.incomplete,
+    elapsedMs: Date.now() - startedAt,
+  };
+  await opsLog({
+    op: closure.failed.length || closure.incomplete ? "main-tarball-plan-incomplete" : "main-tarball-plan-ok",
+    ...summary,
+  });
+  return { items, closure, summary };
+}
+
+function httpGetBuffer(url, idleMs, totalMs, maxBytes, headers) {
+  return new Promise((resolve, reject) => {
+    const mod = String(url).startsWith("https:") ? https : http;
+    let settled = false;
+    let idleTimer = null;
+    let totalTimer = null;
+    let req = null;
+    const done = (err, buf) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idleTimer);
+      clearTimeout(totalTimer);
+      if (err) reject(err);
+      else resolve(buf);
+    };
+    const fail = (err) => {
+      if (req) req.destroy();
+      done(err);
+    };
+    req = mod.get(
+      url,
+      { agent: false, headers: { "User-Agent": "dsh-update-checker", Connection: "close", ...(headers || {}) } },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          return done(new Error(`HTTP ${res.statusCode}`));
+        }
+        const chunks = [];
+        let bytes = 0;
+        const armIdle = () => {
+          clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => fail(new Error(`no data for ${Math.round(idleMs / 1000)}s`)), idleMs);
+        };
+        armIdle();
+        res.on("data", (c) => {
+          if (settled) return;
+          bytes += c.length;
+          if (bytes > maxBytes) return fail(new Error(`tarball exceeds ${maxBytes} bytes`));
+          chunks.push(c);
+          armIdle();
+        });
+        res.on("end", () => {
+          if (bytes === 0) return done(new Error("empty tarball response"));
+          done(null, Buffer.concat(chunks));
+        });
+        res.on("error", (err) => done(err));
+      }
+    );
+    req.on("error", (err) => done(err));
+    totalTimer = setTimeout(() => fail(new Error(`download exceeded ${Math.round(totalMs / 1000)}s`)), totalMs);
+  });
+}
+
 async function downloadTarballToFile(pkgName, version, destFile) {
-  const url = `https://registry.npmjs.org/@deepseek-ai%2F${pkgName}/-/${pkgName}-${version}.tgz`;
+  const url = registryTarballUrl(pkgName, version);
   const buf = await new Promise((resolve, reject) => {
-    const doFetch = async (triesLeft) => {
+    const attemptOnce = async (triesLeft) => {
+      const attempt = TARBALL_ATTEMPTS + 1 - triesLeft;
+      const totalMs = TARBALL_ATTEMPT_TIMEOUTS_MS[Math.min(attempt - 1, TARBALL_ATTEMPT_TIMEOUTS_MS.length - 1)];
       try {
-        const r = await fetch(url, { headers: { "User-Agent": "dsh-update-checker" } });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const ab = await r.arrayBuffer();
-        resolve(Buffer.from(ab));
+        resolve(await httpGetBuffer(url, TARBALL_IDLE_TIMEOUT_MS, totalMs, TARBALL_MAX_BYTES));
       } catch (err) {
-        if (triesLeft <= 1) return reject(new Error(`tarball download failed: ${err.message}`));
-        setTimeout(() => doFetch(triesLeft - 1), 1500);
+        const msg = String((err && err.message) || err);
+        if (triesLeft <= 1) {
+          await opsLog({ op: "main-tarball-download-failed", pkg: pkgName, attempts: attempt, error: msg });
+          return reject(new Error(`tarball download failed: ${msg}`));
+        }
+        await opsLog({ op: "main-tarball-download-retry", pkg: pkgName, attempt, error: msg });
+        setTimeout(() => attemptOnce(triesLeft - 1), 1000);
       }
     };
-    doFetch(3);
+    attemptOnce(TARBALL_ATTEMPTS);
   });
   await writeFile(destFile, buf);
   return buf.length;
 }
 
 
-async function extractTarballFile(tarballFile, pkgName, nmDir, version) {
+async function extractTarballFile(tarballFile, entry) {
   const gz = gunzipSync(readFileSync(tarballFile));
   const entries = [];
   let off = 0;
@@ -684,10 +1088,11 @@ async function extractTarballFile(tarballFile, pkgName, nmDir, version) {
     if (type === 48 || type === 0) entries.push({ name: nameRaw, data: gz.subarray(off + 512, off + 512 + size) });
     off += 512 + Math.ceil(size / 512) * 512;
   }
-  const pkgDir = join(nmDir, pkgName);
+  const pkgDir = join(DEPLOY_NODE_MODULES, entry.name);
   const bak = pkgDir + ".bak-tarball";
   try { await rm(bak, { recursive: true, force: true }); } catch {  }
   try { await cp(pkgDir, bak, { recursive: true }); } catch {  }
+  await mkdir(dirname(pkgDir), { recursive: true });
   await rm(pkgDir, { recursive: true, force: true });
   await mkdir(pkgDir, { recursive: true });
   for (const e of entries) {
@@ -698,11 +1103,11 @@ async function extractTarballFile(tarballFile, pkgName, nmDir, version) {
     await writeFile(target, e.data);
   }
   const pj = await readJson(join(pkgDir, "package.json"));
-  if (!pj || pj.version !== version) {
+  if (!pj || pj.version !== entry.version) {
     
     await rm(pkgDir, { recursive: true, force: true });
     if (await exists(bak)) await cp(bak, pkgDir, { recursive: true });
-    throw new Error(`${pkgName} tarball version mismatch (${pj && pj.version} != ${version})`);
+    throw new Error(`${entry.name} tarball version mismatch (${pj && pj.version} != ${entry.version})`);
   }
   await rm(bak, { recursive: true, force: true }).catch(() => {});
   return pj.version;
@@ -731,28 +1136,42 @@ async function collectUpdateTodo() {
 }
 
 
-async function downloadTarballsToCache(todo, cacheDir, onProgress) {
+async function downloadTarballsToCache(items, cacheDir, onProgress) {
   const ok = [];
   const failed = [];
   const skipped = [];
-  for (let i = 0; i < todo.length; i++) {
-    const n = todo[i];
-    if (onProgress) onProgress({ current: i + 1, total: todo.length, name: n });
-    const dest = join(cacheDir, `${n}-${TARGET}.tgz`);
+  let completed = 0;
+  let cursor = 0;
+  await writeFile(join(cacheDir, TARBALL_PLAN_FILE), JSON.stringify({ target: TARGET, items }, null, 2), "utf8");
+  const runOne = async (item) => {
+    const dest = join(cacheDir, item.file);
     try {
-      await downloadTarballToFile(n, TARGET, dest);
-      ok.push(n);
+      await downloadTarballToFile(item.name, item.version, dest);
+      ok.push(item);
     } catch (err) {
       const msg = String((err && err.message) || err);
       if (msg.includes("HTTP 404")) {
-        skipped.push(n);
-        await opsLog({ op: "main-tarball-pkg-skipped", pkg: n, error: msg });
+        skipped.push(item.name);
+        await opsLog({ op: "main-tarball-pkg-skipped", pkg: item.name, version: item.version, error: msg });
       } else {
-        failed.push({ name: n, error: msg });
-        await opsLog({ op: "main-tarball-pkg-failed", pkg: n, error: msg });
+        failed.push({ name: item.name, error: msg });
+        await opsLog({ op: "main-tarball-pkg-failed", pkg: item.name, version: item.version, error: msg });
       }
+    } finally {
+      completed += 1;
+      if (onProgress) onProgress({ current: completed, total: items.length, name: item.name });
     }
-  }
+  };
+  const lane = async () => {
+    for (;;) {
+      const i = cursor;
+      cursor += 1;
+      if (i >= items.length) return;
+      await runOne(items[i]);
+    }
+  };
+  const lanes = Math.max(1, Math.min(TARBALL_CONCURRENCY, items.length));
+  await Promise.all(Array.from({ length: lanes }, lane));
   try {
     await writeFile(
       join(DSH_HOME, "dsh-update-checker-skipped-pkgs.json"),
@@ -760,29 +1179,33 @@ async function downloadTarballsToCache(todo, cacheDir, onProgress) {
       "utf8"
     );
   } catch {  }
-  return { ok, failed, skipped, total: todo.length };
+  return { ok, failed, skipped, total: items.length };
 }
 
 
 async function extractTreeFromCache(cacheDir, onProgress) {
-  const nm = join(ROOT, "node_modules", "@deepseek-ai");
-  const files = (await readdir(cacheDir)).filter((f) => f.endsWith(`-${TARGET}.tgz`));
+  const plan = await readJson(join(cacheDir, TARBALL_PLAN_FILE));
+  const items = (plan && Array.isArray(plan.items) ? plan.items : []).filter((i) => i && i.name && i.version && i.file);
   const updated = [];
   const failed = [];
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
-    const name = f.slice(0, -(TARGET.length + 5)); 
-    if (onProgress) onProgress({ current: i + 1, total: files.length, name });
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (onProgress) onProgress({ current: i + 1, total: items.length, name: item.name });
+    const tarball = join(cacheDir, item.file);
+    if (!(await exists(tarball))) {
+      failed.push({ name: item.name, error: "tarball not downloaded" });
+      continue;
+    }
     try {
-      await extractTarballFile(join(cacheDir, f), name, nm, TARGET);
-      updated.push(name);
+      await extractTarballFile(tarball, item);
+      updated.push(item.name);
     } catch (err) {
       const msg = String((err && err.message) || err);
-      failed.push({ name, error: msg });
-      await opsLog({ op: "main-tarball-extract-failed", pkg: name, error: msg });
+      failed.push({ name: item.name, error: msg });
+      await opsLog({ op: "main-tarball-extract-failed", pkg: item.name, version: item.version, error: msg });
     }
   }
-  return { updated, failed, total: files.length };
+  return { updated, failed, total: items.length };
 }
 
 
@@ -882,6 +1305,7 @@ async function main() {
   baseArgs.push(spec, "--no-audit", "--no-fund", "--loglevel=http");
   let installVia = "npm";
   let cacheDir = null;
+  let tarballClosure = null;
   try {
     
     const PLAN_PERCENT = 8;
@@ -913,8 +1337,10 @@ async function main() {
       installVia = "tarball";
       cacheDir = await mkdtemp(join(tmpdir(), "duc-dl-"));
       dlLabel = "正在下载新版本（服务不中断）…";
-      const todo = await collectUpdateTodo();
-      const dl = await downloadTarballsToCache(todo, cacheDir, (p) => {
+      dlDetail = "正在解析目标版本依赖闭包（缺失包与版本变更）…";
+      const planned = await planTarballUpdate();
+      tarballClosure = planned.closure;
+      const dl = await downloadTarballsToCache(planned.items, cacheDir, (p) => {
         const percent = packageProgressPercent(p.current, p.total) ?? PLAN_PERCENT;
         planPercent = Math.max(planPercent, percent);
         dlDetail = `已下载 ${p.current}/${p.total} 个包（${planPercent}%）（${p.name}）`;
@@ -1058,7 +1484,7 @@ async function main() {
       percent: 99,
       detail: sec > 4 ? `已校验 ${sec}s` : null,
     }));
-    const verify = await verifyTree();
+    const verify = await verifyTree(installVia === "tarball" && tarballClosure ? closureExpectations(tarballClosure) : []);
     if (!verify.ok) {
       const rollback = await rollbackFromBackup();
       await verifyTicker.stop();
@@ -1232,4 +1658,4 @@ if (!process.env.DSH_UC_UPDATE_NO_RUN) {
     });
 }
 
-export { verifyTree, ensureServiceStopped, killPidsOnPort, portOccupied, portPids, startService, phaseCreepPercent, countLockPackages, startProgressTicker, classifyHealthStatus, classifyInstanceIdentity, healthCheck };
+export { verifyTree, ensureServiceStopped, killPidsOnPort, portOccupied, portPids, startService, phaseCreepPercent, countLockPackages, startProgressTicker, classifyHealthStatus, classifyInstanceIdentity, healthCheck, satisfies, compareSemverVersions, fixedVersion, highestSatisfying, registryTarballUrl, resolveTargetClosure, closureExpectations, planTarballUpdate, planFileName, downloadTarballsToCache, extractTreeFromCache, extractTarballFile };

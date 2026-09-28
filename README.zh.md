@@ -123,6 +123,12 @@ New-Item -ItemType Junction `
 
 ## 更新日志
 
+- **v1.6.4** — tarball 回退路径会装上本版本新增的包，且完整性校验能证明这一点（issue #33）：
+  - **弱网不再静默丢包（#33）。** npm dry-run 超时后，主程序更新会降级到 `installVia=tarball`，而它的待装清单来自 `collectUpdateTodo()`——对本地 `@deepseek-ai` 目录做一次 `readdir()`。本版本**新增**的包本地没有目录，因此永远进不了清单；第三方 scope 更是完全不在枚举范围：0.1.7-rc.1 → 0.1.7-rc.2 那次只装上了 lockfile 里 585 个包中的 267 个，`dsh-client-shortcuts`、`dsh-client-ui-shortcuts`、`dsh-experimental-auto-review`、`dsh-llm-deepseek-account`、`dsh-llm-deepseek-api-key`、`dsh-util-code-language`、`@js-temporal/polyfill`、`jsbi` 全部缺失，却照样报 `main-update-ok`——3080 端口能应答，插件/前端 import 却全部失败。现在 worker 会从注册表走一遍**目标版本的依赖闭包**（`resolveTargetClosure()`，复用已有的 `satisfies()` / `compareVersions()`），只规划"本部署解析不到"的部分：缺失的包，以及解析版本不符的 `@deepseek-ai/*` 包。凡是已满足自身范围的包一律原样保留，因此 npm 嵌套去重的多份副本（例如 `^4` 的依赖方下面那份 `debug@2`）绝不会被拍平；平台不匹配的可选依赖（在报告这台机器上有 73 个）与"需要原地改版本且带 install 脚本"的第三方包跳过并记日志。解压落点为 `node_modules/<name>`（需要时自动创建新的 `@scope/` 目录），计划、跳过与失败逐条写入 ops 日志（`main-tarball-plan-ok` / `-incomplete`、`main-tarball-metadata-failed`、`main-tarball-plan-conflict`）。
+  - **完整性校验现在包含"闭包是否装全"（#33）。** `verifyTree()` 原先只遍历已存在的目录，没装上的包根本无法让它失败——这正是上面那次半残安装得以"成功"的原因。现在它同时核对解析出的闭包：缺包或版本不符即判完整性问题并回滚，把"静默半坏"变成"诚实失败"。注册表不可达时闭包标记为 `incomplete` 并保持原有的本地-only 行为，因此回退路径绝不会比旧版更差。
+  - **下载超时保留。** `httpGetBuffer()` 在 20 秒无数据或单次尝试超限时中止，按 60/90/180 秒递增上限重试三次，且绝不复用连接——实测到与 registry 的长 keep-alive 连接会退化到单个包耗时 10–20 分钟。
+  - **测试**：`node --test "scripts/*.test.mjs"` 244 项全过，其中新增 `scripts/integration-tarball-closure.test.mjs`（本地 mock registry，覆盖新增包、传递新增包、`@scope` 新目录、严格上下文升级、平台与构建脚本跳过、注册表不可达回退，以及"抽掉一个包后完整性校验必须失败"）与 `scripts/unit-tarball-timeout.test.mjs`（空闲/单次尝试超时、体积上限、HTTP 状态、不复用连接、下载并发上限）。并在**真实注册表**上用一棵恰好抽掉那 8 个包的树复核：计划恰好命中这 8 个包，12 个 tarball 全部解压且版本逐一相符，`verifyTree()` 报 0 问题。
+
 - **v1.6.3** — 升级后重启看得见、进度条按包数走、npm 探测覆盖发行版布局（issue #30 #31 #32）：
   - **主程序升级后不再留下无控制台孤儿进程。** `startService()` 原以 `detached: true` + `stdio: "ignore"` + `windowsHide: true` 拉起服务——一个没有控制台的隐形实例：它活过更新 worker、继续占着 Web 端口，启动时打印的访问地址/token 随 stdout 一起丢弃；下次启动就会撞 `listen EADDRINUSE 127.0.0.1:3080`，并炸出一片「N required plugins did not activate」（`webserver` 是 required，整个插件图都组不起来）。现在重启优先走部署自带的启动器（`DSH_UC_LAUNCHER` / `DSH_RESTART_LAUNCHER` / `DeepSeek Harness.cmd` / `start-dsh.cmd` …）且**带可见窗口**；没有启动器时退回 `node … bin.js web`，同样可见，并在 ops 日志记下 `main-update-service-restart`。
   - **进度条改为「已下载包数 / 总包数」。** 不再用依赖树时间爬坡、也不数 npm 的 HTTP 行（含元数据，会跑到真实进度前面）。下载/安装期间百分比 = `round(已完成 / 总数 * 100)`：200 个包下到 100 个就是 50%，198 个就是 99%；详情写「已下载 137/273 个包（50%）」。总数取自 npm dry-run 的「added N packages」或 lockfile；tarball 回退路径按已下载 tarball 同样计算。进度条不再回退，100% 留给「已完成」。
@@ -134,23 +140,6 @@ New-Item -ItemType Junction `
   - **POSIX 主程序更新（#29，取代 PR #19）**：更新 worker、服务停止/启动探测与重启路由不再假定 Windows PowerShell。worker 改为直接 `node <脚本>`（detached）拉起，并接上 `error` 监听——spawn 失败会释放更新锁、写入真实的 `error` 进度记录；此前这种失败是静默的，横幅会永远停在 8%。POSIX 下找端口进程用 `ss -H -tlnp "sport = :<端口>"`，退化时用 `lsof -tiTCP:<端口> -sTCP:LISTEN`，绝不扫描全部监听；只有 `/proc/<pid>/cmdline` 读不到或确实写着 node/dsh 时才杀该 PID，用 `SIGKILL` 取代 `taskkill`。`scripts/restart-watchdog.sh` 与 `restart-watchdog.ps1` 对齐（同样的环境变量、同样的结果 JSON），重启顺序为 node argv → `systemctl --user restart dsh-web.service` → 启动器路径（作为**单个**参数传入）。Windows 行为完全未变（`Get-NetTCPConnection`、`taskkill /T /F`、PowerShell `Start-Process`）。既没有 `ss` 也没有 `lsof` 的机器仍以 `501 E_PLATFORM_UNSUPPORTED` 快速失败。
   - **只有 peerDependencies 的插件能装了（#28）**：`buildStageInstallArgs`/`buildPluginInstallArgs` 追加 `--legacy-peer-deps`。暂存前缀是一棵用完就丢的树，插件的 peer 由 DSH 宿主机在运行时提供，所以这里不该去 registry 解析——那边 `*` 范围会落到一个并不存在的包上（`@deepseek-ai/dsh-compact`，`E404`），于是所有纯 peer 插件必然 `ERESOLVE` 失败。
   - **`PROFILES_ROOT` 支持"每个 profile 自带 node_modules"布局（#27、PR #26）**：`dirname(profileNodeModules)` 只在共用布局下才是 profiles 目录；对 `…/profiles/<名字>/node_modules` 它等于 profile 目录本身，于是 `findDeclaringProfiles()` 一个清单都找不到，版本从未写回 `package.json`，锁文件也不会推进（`persistedManifest:0`，而 `persistedLock:true` 不过是 `[].every(...)`）。此后任何一次 `pnpm add`/`pnpm install` 都会按这份陈旧锁文件重新 reify，把此前更新过的插件全部打回冻结版本。新增的 `pickProfilesRoot()` 同时支持两种布局，`pickDshHome()` 也随之修正，自定义 `DSH_HOME` 不会再退回 `~/.dsh`。
-
-- **v1.6.1** — 在 v1.6.0 基础上做加固与"说实话"的修正：
-  - **`GET /mount.json` 不再写盘。** 它原本在一个普通 GET 里调用 `ensurePluginMount()`——建 junction、
-    `mkdir`、改写 `profiles/*/package.json`——却既无 `writeGate` 也无回环来源校验，与其它所有写路由
-    不一致。现在它是只读的（返回最近一次结果；启动时的检查尚未完成则返回 `202`），真正的重挂载移到
-    `POST /mount`，与其它写路由一样需要 `{ "confirm": true }` + 回环来源。
-  - **插件更新后、插件回滚后都会重新校验挂载。** 此前只在启动时检查一次，于是换入新版本之后挂载状态
-    要到下次 `dsh` 启动才被验证。现在 `finalizePluginInstall` 与 `rollbackPlugin` 都会重跑，并把结果
-    作为 `mount` 一并返回。
-  - **尊重写在 `devDependencies` 里的声明。** 原先声明步骤只读写 `dependencies`，而本包自己的
-    `declaredSection` 是优先 `devDependencies` 的——于是把插件声明为 dev 依赖的 profile 会被塞进第二条
-    重复声明。现在按 profile 实际所在的依赖段处理，并在报告里以 `section` 说明。
-  - **harness profile 的判定放宽**：由 `pkg.dsh.profile` 改为 `pkg.dsh`，于是缺少该子对象但合法的清单
-    也会被写入依赖声明，而不是只建链接（只建链接会让它一直把自己报成需要更新）。
-  - **文档写明真实限制。** 自挂载逻辑运行在插件内部，也就是只在 profile 组合成功之后才会执行——因此它
-    **无法**修复"首次启动就解析不到插件"那一次。全新安装（以及每新增一个 profile）**必须**手工建链接 +
-    写声明；此后的维护才由插件自己负责。此前的措辞暗示"重启一次可自行修复"，而那恰恰是它修不了的情形。
 
 ## 开发
 
