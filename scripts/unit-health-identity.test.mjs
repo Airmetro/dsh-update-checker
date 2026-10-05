@@ -1,16 +1,3 @@
-/**
- * 实例身份校验（v1.5.0）。
- *
- * 背景：安装成功后的健康检查原先只要求"3080 端口有人应答"——200 就扫资源，
- * 401/403/407 直接判成功。于是在 composeProfile 阶段就崩掉的机器上，它照样
- * 报告"更新成功"（实机事故：更新 0.1.6-alpha.1 后启动即崩，插件日志却是
- * main-update-ok）。
- *
- * 现在把插件自己的路由当作身份探针：重启前的实例 id 由宿主通过
- * DSH_UC_UPDATE_PREV_INSTANCE 传进来，只有探到的 instanceId 与它不同，才说明
- * 真的是新进程在服务。探不到（插件未组合、路由未就绪、宿主版本较旧）时保持
- * 原有行为，绝不把可能健康的更新误判为失败。
- */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

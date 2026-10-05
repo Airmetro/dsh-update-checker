@@ -27,7 +27,7 @@ import https from "node:https";
 import { gunzipSync } from "node:zlib";
 
 
-import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock, collectPortPids, servicePidsOnPort, portAlive, killPid, probePortOpen, findLauncherFile, buildServiceRelaunch, countNpmTarballFetches, parseNpmPackageCount, packageProgressPercent, satisfies, compareVersions as compareSemverVersions } from "../lib/index.js";
+import { resolveNodeExe, getNpmCli, findDshPackageDir, listDshPackageDirs, looksLikeFileLockError, installWithFileLockRetry, shouldResetStaleLock, collectPortPids, servicePidsOnPort, portAlive, killPid, probePortOpen, findLauncherFile, buildServiceRelaunch, countNpmTarballFetches, parseNpmPackageCount, parseNpmRemoveList, formatRemovedPackages, packageProgressPercent, satisfies, compareVersions as compareSemverVersions } from "../lib/index.js";
 
 const ROOT = process.env.DSH_UC_UPDATE_ROOT;
 const TARGET = process.env.DSH_UC_UPDATE_TARGET;
@@ -523,25 +523,12 @@ function classifyHealthStatus(status) {
   return "bad";
 }
 
-/**
- * Pure classification of one identity probe. "fresh" proves a new dsh process is
- * serving, "stale" that the very instance which ran before the restart still is,
- * and "unavailable" that the probe could not decide (no prior id to compare with,
- * this plugin's routes not composed, or a route not answering yet) — in which
- * case the caller keeps the previous behaviour instead of failing an update that
- * may well be healthy.
- */
 function classifyInstanceIdentity(prevInstanceId, probedInstanceId) {
   if (typeof prevInstanceId !== "string" || prevInstanceId === "") return "unavailable";
   if (typeof probedInstanceId !== "string" || probedInstanceId === "") return "unavailable";
   return probedInstanceId === prevInstanceId ? "stale" : "fresh";
 }
 
-/**
- * Read the *serving* dsh instance's id from this plugin's own routes. The cheap
- * progress route answers during an update and echoes the live instance id; the
- * status route is the authoritative fallback.
- */
 async function probeInstanceId(fetchOnce, base) {
   for (const route of ["/dsh-update-checker/update-progress.json", "/dsh-update-checker/status.json"]) {
     const res = await fetchOnce(base + route);
@@ -1238,8 +1225,6 @@ async function syncProfilesToDeploy() {
           results.push({ name: n, ok: true, skipped: "junction" });
           continue;
         }
-        // dst 存在但不是 deploy 的那一份：可能是旧版残留的实体副本，或指向旧 deploy 根的链接。
-        // 只回收确实装着这个包的路径，绝不删除来路不明的东西。
         const st = await lstat(dst).catch(() => null);
         let reclaimable = Boolean(st && st.isSymbolicLink());
         if (st && st.isDirectory()) {
@@ -1323,8 +1308,18 @@ async function main() {
     try {
       const dry = await runNpm([...baseArgs, "--dry-run"], { cwd: ROOT, timeoutMs: 150000 });
       npmReady = true;
-      dryRunPackages = parseNpmPackageCount(`${(dry && dry.stdout) || ""}${(dry && dry.stderr) || ""}`);
-      await opsLog({ op: "main-npm-dryrun-ok", type, packages: dryRunPackages });
+      const dryText = `${(dry && dry.stdout) || ""}${(dry && dry.stderr) || ""}`;
+      dryRunPackages = parseNpmPackageCount(dryText);
+      const dryRemovals = formatRemovedPackages(parseNpmRemoveList(dryText));
+      const allowRemove = process.env.DSH_UC_UPDATE_ALLOW_REMOVE === "1";
+      await opsLog({
+        op: "main-npm-dryrun-ok",
+        type,
+        packages: dryRunPackages,
+        removals: dryRemovals.length,
+        removed: dryRemovals.slice(0, 80),
+        allowRemove,
+      });
     } catch (err) {
       await opsLog({
         op: "main-npm-dryrun-fail",

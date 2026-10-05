@@ -1,17 +1,3 @@
-/**
- * 「每个 profile 自带 node_modules」布局的回归测试。
- *
- * 背景：`PROFILES_ROOT` 取自 `dirname(profileNodeModules)`。当所有 profile 共用一个
- * `<home>/profiles/node_modules` 时这是对的，但 dsh 同样支持
- * `<home>/profiles/<name>/node_modules`：此时 `dirname` 得到的是 profile 目录本身，
- * `profileDirOf()` 与 `findDeclaringProfiles()` 于是一个 manifest 都找不到。
- * 症状是更新把文件换掉了、版本却没有写回 `package.json`（ops.log 里
- * `persistedManifest=0`），下一次 `pnpm install`（装插件、重启服务都会触发）就静默
- * 退回旧版本，用户看到的是「更新点了很多次都装不上」。
- *
- * Regression test for the per-profile `…/profiles/<name>/node_modules` layout:
- * the profiles root is the directory *above* the profile, not the profile itself.
- */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
@@ -58,7 +44,6 @@ test.before(async () => {
   );
   process.env.DSH_UC_PNPM_LOG = pnpmLog;
 
-  // 关键：指向「profile 自带」的 node_modules，而不是共用根
   process.env.DSH_UC_PROFILE_NODE_MODULES = nested;
   process.env.DSH_UC_PNPM_BIN = fakePnpm;
   process.env.DSH_HOME = base;

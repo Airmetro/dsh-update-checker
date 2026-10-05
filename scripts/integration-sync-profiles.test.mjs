@@ -1,19 +1,3 @@
-/**
- * syncProfilesToDeploy 回归测试（v1.5.0）。
- *
- * 刻意从 main-update-worker.mjs 里"提取"函数源码来执行，而不是复制粘贴一份实现——
- * 否则测试会与被测代码漂移，而漂移正是本缺陷得以发布的土壤：integration-junction.test.mjs
- * 测的是 lib/index.js 的 runSync（输出 skipped: 'same-file (junction)'），主程序更新实际
- * 执行的却是 worker 里的 syncProfilesToDeploy（输出 skipped: "junction"），后者新建路径
- * 没有任何用例覆盖。同一套用例对 1.4.23 的 worker 4/6 失败，对本版 6/6 通过。
- *
- * 覆盖场景：A 全新包建链接而非实体复制；B 残留实体副本被回收；C 同名外来目录绝不被删除；
- * D 悬空链接被重建；E 非 dsh 前缀包被忽略；F deploy 树不可读时安全退出。
- *
- * 注入的依赖包含 `cp`：上一版正是用 `cp(..., { force: true })` 写入的，把它接进沙箱才能让
- * 旧实现的复制路径被真正执行（而不是抛 `cp is not defined`），从而证明这套用例抓的是缺陷
- * 本身，而不是缺少绑定。
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, mkdtemp, mkdir, writeFile, rm, lstat, realpath, symlink, readdir, cp } from "node:fs/promises";
@@ -41,7 +25,6 @@ async function exists(p) { try { await lstat(p); return true; } catch { return f
 async function readJson(p) { try { return JSON.parse(await readFile(p, "utf8")); } catch { return null; } }
 async function opsLog(entry) { opsLogs.push(entry); }
 
-/** 用被测源码构造一个绑定到指定 ROOT 的 syncProfilesToDeploy */
 function makeSync(root) {
   const factory = new Function(
     "ROOT", "join", "dirname", "readdir", "exists", "realpath", "lstat",
@@ -57,7 +40,6 @@ async function makePkg(dir, name, version = "1.0.0") {
   await writeFile(join(dir, "index.js"), `// ${name}`, "utf8");
 }
 
-/** 布置一个 deploy + profile 环境 */
 async function scaffold(pkgs) {
   const base = await mkdtemp(join(tmpdir(), "duc-fix-"));
   const root = join(base, "deploy");
@@ -80,7 +62,6 @@ async function isLinkedTo(dst, src) {
 test("场景A：全新包建为链接，而非实体复制（原 bug 的核心）", async () => {
   const { base, root, profileNm } = await scaffold(["dsh-aaa", "dsh-bbb", "dsh-ccc"]);
   try {
-    // dsh-aaa 已是指向 deploy 的链接；bbb / ccc 在 profile 中不存在
     await symlink(
       join(root, "node_modules", "@deepseek-ai", "dsh-aaa"),
       join(profileNm, "@deepseek-ai", "dsh-aaa"),
@@ -109,7 +90,6 @@ test("场景B：残留的实体副本被回收为链接（你机器上的实际�
   const { base, root, profileNm } = await scaffold(["dsh-workflow-ptc"]);
   const dst = join(profileNm, "@deepseek-ai", "dsh-workflow-ptc");
   try {
-    // 模拟 bug 的产物：一份实体目录副本，而非链接
     await makePkg(dst, "@deepseek-ai/dsh-workflow-ptc", "0.1.6-alpha.1");
     const st0 = await lstat(dst);
     assert.ok(st0.isDirectory() && !st0.isSymbolicLink(), "前置条件：应为实体目录");
@@ -131,7 +111,6 @@ test("场景C：同名但不同来源的目录绝不被删除", async () => {
   const { base, root, profileNm } = await scaffold(["dsh-foreign"]);
   const dst = join(profileNm, "@deepseek-ai", "dsh-foreign");
   try {
-    // 用户在 profile 里装的、与 deploy 无关的同名包
     await makePkg(dst, "@somebody-else/not-this-package", "9.9.9");
     process.env.DSH_UC_UPDATE_PROFILE_NM = profileNm;
     const results = await makeSync(root)();
@@ -149,7 +128,6 @@ test("场景D：悬空链接被重建", async () => {
   const { base, root, profileNm } = await scaffold(["dsh-dangling"]);
   const dst = join(profileNm, "@deepseek-ai", "dsh-dangling");
   try {
-    // 指向一个不存在的旧 deploy 根
     await symlink(join(base, "gone", "dsh-dangling"), dst, linkType);
     process.env.DSH_UC_UPDATE_PROFILE_NM = profileNm;
     const results = await makeSync(root)();

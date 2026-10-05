@@ -1,27 +1,3 @@
-/**
- * 插件自我挂载回归测试（自 dsh 0.1.6-alpha.2 起必须成立的新行为）。
- *
- * 背景：0.1.6-alpha.2 把 profile 默认解析模式从 "link" 改为 "runtime"。runtime 模式下
- * `$DSH_HOME/profiles/node_modules` 成为**受管共享目录**，被排除在 Node 原生解析之外，
- * 只服务部署依赖闭包与 bundle 闭包；第三方插件两者皆不属于，于是 profile 的
- * `cordis.patch.yml` 里那句 `name: 'dsh-update-checker'` 解析失败，启动即崩：
- *   ERR_MODULE_NOT_FOUND: Cannot find package 'dsh-update-checker' imported from ...\profiles\web\
- * （报错里的 importer 路径被 dsh 改写成了 profile 目录，真实基准是 `$DSH_HOME/package.json`，
- *  所以这条报错本身具有误导性。）
- *
- * 修法是两件事，缺一不可，本文件逐条覆盖：
- *   1. `profiles/<profile>/node_modules/dsh-update-checker` 必须是指向
- *      `profiles/node_modules/dsh-update-checker` 的**链接**（Windows 用 junction）。
- *      routeScoped 在遇到共享目录前先看 profile 自己的 node_modules，命中即走 native；
- *      用**实体副本**则会让 `import.meta.url` 落在 `profiles/<profile>/node_modules` 下，
- *      `pickDshHome` 认不出 "profiles" → 自我定位漂移（v1.4.23 就是这个坑）。
- *   2. `profiles/<profile>/package.json` 的 dependencies 必须声明本插件，否则
- *      dsh 的 readProfilePlugins 与本插件的 findDeclaringProfiles/persistPluginUpdate
- *      都认不出归属，表现为"同一个插件永远提示要更新"。
- *
- * 测试直接调用真实的导出函数（不是复制一份实现），每个用例用独立的临时 DSH_HOME
- * 重新 import 一次模块，避免模块级常量在用例间串味。
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, realpath, readdir, cp } from "node:fs/promises";
@@ -54,11 +30,6 @@ async function exists(p) {
   }
 }
 
-/**
- * 造一个独立的 Harness home：<base>/.dsh/profiles/{node_modules,web,other}，
- * 并把本插件放在 profiles/node_modules 下（真实安装位置）。
- * 注意 DSH_UC_PROFILE_NODE_MODULES 是模块级常量，必须先设再 import。
- */
 let importSeq = 0;
 async function scaffold(opts = {}) {
   const { pluginVersion = "1.6.0", profiles = ["web", "other"] } = opts;
@@ -95,7 +66,6 @@ async function scaffold(opts = {}) {
   return { base, home, profilesRoot, profileNm, pluginDir, mod };
 }
 
-/** 该路径是否为指向 target 的链接（junction 在 Windows 上也是 isSymbolicLink()） */
 async function isLinkedTo(dst, target) {
   const st = await lstat(dst).catch(() => null);
   if (!st || !st.isSymbolicLink()) return false;
@@ -116,8 +86,6 @@ test("场景1：缺失的 profile 链接被建立，且声明写入 profile pack
       await isLinkedTo(linkPath, s.pluginDir),
       "必须在 profiles/web/node_modules 下建立指向真实包的链接"
     );
-    // 用副本而不是链接是本缺陷最容易的错法：realpath 必须仍在 profiles/node_modules 下，
-    // 否则插件的自我定位（pickDshHome）会失去 home。
     assert.equal(
       await realpath(linkPath),
       await realpath(s.pluginDir),
@@ -138,7 +106,6 @@ test("场景2：实体副本被回收为链接（v1.4.23 缺陷形态）", async
   const s = await scaffold();
   try {
     const linkPath = join(s.profilesRoot, "web", "node_modules", SELF);
-    // 模拟旧版 sync 的产物：一份真实目录副本，而非链接
     await makePkg(linkPath, SELF, "1.5.0");
     const st0 = await lstat(linkPath);
     assert.ok(st0.isDirectory() && !st0.isSymbolicLink(), "前置条件：应为实体目录");
@@ -360,7 +327,6 @@ test("场景8：插件不在 profiles/node_modules 下时安全退出（npm -g /
 test("场景9：runSync 写链接而非实体副本（profile 侧 @deepseek-ai 的同一类故障）", async () => {
   const s = await scaffold();
   try {
-    // deploy 树里有两个框架包，profile 侧一个都没有
     const deployRoot = join(s.base, "deploy");
     await makePkg(join(deployRoot, "node_modules", "@deepseek-ai", "dsh"), "@deepseek-ai/dsh", "2.0.0");
     await makePkg(
@@ -454,13 +420,11 @@ test("场景10：runSync 回收 profile 侧的实体副本，但拒绝外来同�
       "@deepseek-ai/dsh-foreign",
       "2.0.0"
     );
-    // 旧版 cp 留下的实体副本
     await makePkg(
       join(s.profileNm, "@deepseek-ai", "dsh-ptc-runtime"),
       "@deepseek-ai/dsh-ptc-runtime",
       "1.0.0"
     );
-    // 与 deploy 无关的同名外来目录
     await makePkg(join(s.profileNm, "@deepseek-ai", "dsh-foreign"), "@someone/else", "9.9.9");
 
     const results = await s.mod.runSync(deployRoot, [
