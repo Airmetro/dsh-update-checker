@@ -102,7 +102,13 @@ const hostSource = readFileSync(new URL("../lib/index.js", import.meta.url), "ut
 const workerSource = readFileSync(new URL("../scripts/main-update-worker.mjs", import.meta.url), "utf8");
 check("progress: the old frozen ticker (cap at 8%) is gone from the worker", !workerSource.includes("Math.min(8, 4 + Math.floor(waited / 30))"));
 check("progress: the worker now creeps through every phase", workerSource.includes("startProgressTicker"));
-check("progress: the stop-service milestone follows the download creep instead of a 6%->64% jump", workerSource.includes("percent: 58") && !workerSource.includes("percent: 64 });"));
+const milestonePercents = [...workerSource.matchAll(/percent: (\d+)/g)].map((m) => Number(m[1]));
+const milestonesNonDecreasing = milestonePercents.every((p, i) => i === 0 || p >= milestonePercents[i - 1]);
+check(
+  "progress: the worker milestones are non-decreasing (no 6%->64% jump, no 64 stall)",
+  milestonePercents.length >= 4 && milestonesNonDecreasing && !workerSource.includes("percent: 64 });"),
+  JSON.stringify(milestonePercents)
+);
 check("progress: npm install no longer counts against a hardcoded 587 packages", !workerSource.includes("const total = 587"));
 check("issue #18: the worker observes the restart instead of failing immediately", workerSource.includes("restart-pending") && workerSource.includes("RESTART_EXTRA_WINDOW_MS"));
 check("issue #25: the host reconciles stale progress and stale locks at startup", hostSource.includes("reconcileStaleUpdateState(") && hostSource.includes("reconcileStaleUpdateLock()"));

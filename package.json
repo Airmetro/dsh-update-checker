@@ -1,7 +1,7 @@
 {
     "name":  "dsh-update-checker",
-    "version":  "1.7.0",
-    "description":  "Auto-check DeepSeek Harness and third-party plugin updates, notify in the Web GUI, one-click update with backup/rollback and restart watchdog.",
+    "version":  "1.7.1",
+    "description":  "Auto-check DeepSeek Harness updates for both dsh web and the Desktop app, check third-party plugin updates, notify in the GUI, one-click update with backup/rollback and restart watchdog.",
     "type":  "module",
     "scripts":  {
                     "test":  "node --test \"scripts/*.test.mjs\""
@@ -47,6 +47,8 @@
     "keywords":  [
                      "dsh",
                      "deepseek-harness",
+                     "desktop",
+                     "electron",
                      "cordis",
                      "update",
                      "notify"

@@ -77,10 +77,19 @@ New-Item -ItemType Junction `
 
 等 patch HMR 自动应用（或重启 `dsh web`），然后刷新浏览器页面。
 
+## 桌面端（Electron）安装差异
+
+桌面端应用自带 profile 与包管理器，安装方式与 web 不同：
+
+1. 包放进**桌面端自己的 profile**：`$DSH_HOME/profiles/desktop/node_modules/dsh-update-checker`（应用用自带 pnpm 管理该目录，不要用 web 的 `profiles/web`）。
+2. 组合行加在 `$DSH_HOME/profiles/desktop/cordis.patch.yml`；清单声明加在 `$DSH_HOME/profiles/desktop/package.json` 的 `dependencies`。
+3. 生效需要**重启桌面端应用**（Host 代码不热加载）：托盘菜单 →「退出 DeepSeek Harness」→ 重新打开。
+4. 插件在桌面端不会（也无法）更新主程序内核：内核随签名应用打包在 `resources/app.asar` 内，横幅与设置页提供「打开更新窗口」，由应用自身完成下载、安装与重启。
+
 ## 验证安装
 
 - 打开 DSH Web GUI：顶部会出现主程序更新横幅（有更新时）或"已是最新"提示；设置里出现"检查更新"入口
-- 浏览器访问 `http://127.0.0.1:3080/dsh-update-checker/status.json`，应返回 JSON（含 `latest` / `installed` / `hasUpdate`）
+- 浏览器访问 `http://127.0.0.1:3080/dsh-update-checker/status.json`，应返回 JSON（含 `latest` / `installed` / `hasUpdate` / `platform`）
 - 访问 `http://127.0.0.1:3080/dsh-update-checker/mount.json`，应返回 `ok: true` 且每个 profile 的 `linked` / `declared` 均为 `true`
 
 ## 常见问题
@@ -110,6 +119,12 @@ Host 半身（`lib/index.js`）改动必须重启 `dsh web`；Client 半身（`l
 
 ### 5. 想更新这个插件本身
 设置页"检查更新"→ 插件列表里更新 `dsh-update-checker`；或按"安全方式 A"重新安装新版后重启服务。
+
+### 6. 桌面端相关
+
+- **桌面端"立即更新"按钮消失、变成「打开更新窗口」** — 正常：桌面端内核由应用自身更新（见 README 的「桌面端（Electron）支持」），插件不会对 `app.asar` 做 npm 覆盖安装。
+- **桌面端点了更新却提示手动重启** — 正常：Host 进程归 Electron 管理，插件不会结束它；插件更新后请退出应用再重开。
+- **桌面端 `status.json` 里 `installed` 为空** — 说明 `resources/app.asar/package.json` 读不到；用 `DSH_UC_RESOURCES_DIR` 指向 `…\resources` 即可，`runtime` 块会显示实际使用的路径。
 
 ## 卸载
 

@@ -115,6 +115,18 @@ New-Item -ItemType Junction `
   - 插件更新 — 临时目录安装 + 拷贝，兼容 npm 11/12+。
 - **无法安全完成时**，`/update` 仍会返回 `501 E_PLATFORM_UNSUPPORTED`：只有 `ss` 或 `lsof` 存在时才能可靠地定位服务进程。装一个（`iproute2`、`lsof`）即可，或者停掉 DSH 手工更新。
 
+## 桌面端（Electron）支持
+
+插件在运行期判断自己是被 `dsh web`（普通 Node）托管，还是被桌面端应用（Electron，`ELECTRON_RUN_AS_NODE=1`）托管，并把结果以 `platform` 与 `runtime` 块写进 `/dsh-update-checker/status.json` 与 `/dsh-update-checker/plugins.json`：
+
+- **判定依据** — Electron 运行时（`process.versions.electron`）、`process.argv` 里的桌面端宿主入口（`…/dsh-desktop-host/lib/index.js`）、`process.resourcesPath`、以及已打包的 `app-update.yml`。`DSH_UC_FORCE_PLATFORM=desktop|web` 可强制覆盖；`DSH_UC_RESOURCES_DIR`、`DSH_UC_RUNTIME_DIR`、`DSH_UC_APP_VERSION`、`DSH_UC_FEED_URL` 供测试与非标准布局使用。
+- **版本检查** — 桌面端内核随签名应用打包在 `resources/app.asar` 内，因此"已安装"读的是 `app.asar/package.json`（回退 `app.asar/dsh/package.json`），"最新"来自 Electron 自己用的那份更新源：`app-update.yml`（`provider` / `url` / `channel`，本机为 `nightly`）→ `<url>/<channel>.yml`（`version`、`releaseDate`、安装包 URL 与 sha512）。桌面端的内核版本不再查 npm registry。
+- **一键更新** — 桌面端由应用自身完成更新（下载 → 任务检查 → 安装 → 重启），所以横幅给出的是**打开更新窗口**：调用 `window.dshDesktop.updates.open()`（仅 `dsh-app://app` 文档可见的 preload 桥），并通过 `updates.subscribe()` 同步 Electron 的更新状态（`downloading` / `verifying` / `ready` / `installing`）。`POST /dsh-update-checker/update` 在桌面端返回 `409 E_DESKTOP_OWNED`（带 `action: "open-native-update"`），且**不写**进度文件与更新锁：插件绝不对 `app.asar` 做 npm 覆盖安装。web 侧（npm / tarball、备份、回滚、重启看护）行为完全不变。
+- **回滚** — 返回 `409 E_DESKTOP_OWNED`：打包内核没有插件管辖的备份可还原；需要降级请从官方更新源重装对应版本的桌面端应用。
+- **重启** — 返回 `409 E_DESKTOP_RESTART_MANUAL` 并附本地化指引。profile 与 Host 进程归 Electron 管理，插件不会去结束它；插件更新后请从托盘菜单「退出 DeepSeek Harness」再重新打开应用。
+- **插件更新** — 行为不变，作用于正在运行的 profile（如 `profiles/desktop`）。桌面端上同步锁定文件优先使用应用自带的 pnpm（`resources/runtime/pnpm/bin/pnpm.mjs`，以 `Electron --expose-internals …` + `ELECTRON_RUN_AS_NODE=1` 启动，并把自带 `runtime/bin` 前置到 `PATH`）；若该调用失败则退回探测到的 pnpm。机器上完全没有 npm 时，暂存安装不再直接失败，而是改用自带 pnpm（`pnpm add <spec> --dir <tmp>` / `pnpm install --dir <root> --prod`，构建脚本走 `pnpm rebuild`）。npm 的 Node 解析仍可用 `DSH_UC_NODE_EXE` 覆盖。
+- **设置面板** — 桌面端下会列出运行时来源、更新通道与更新源，隐藏仅对 npm 有意义的控件（预发布开关、默认下载源），并说明内核由应用自行更新。
+
 ## 说明
 
 - **Host 代码改动需要重启服务才生效**（加载器缓存已导入模块）；client 改动由 HMR 拾取，下次刷新页面即生效。
@@ -122,6 +134,18 @@ New-Item -ItemType Junction `
 - `npm install` 前会向 `$DSH_HOME/dsh-update-checker-backups/<timestamp>/` 写入备份（部署 `package.json` + `package-lock.json` + 两份 @deepseek-ai 版本清单 + `backup-meta.json` + `main-snapshot` 里 `@deepseek-ai` 框架整树副本），主程序与插件都有对应回滚路由；主程序回滚在 `main-snapshot` 存在时直接从磁盘恢复，而不是从 registry 重新安装旧版本。
 
 ## 更新日志
+
+- **v1.7.1** — 插件现在能分辨自己跑在哪种宿主上，并针对桌面端（Electron）应用做适配，同时保留 web 端行为：
+  - **运行期平台判定。** `detectDesktopRuntime()` 依据 Electron 运行时、`process.argv` 里的 `dsh-desktop-host` 入口、`process.resourcesPath` 与已打包的 `app-update.yml` 判定宿主，所有状态响应新增 `platform` 与 `runtime` 块（`managedBy`、Electron 版本、应用根目录、resources/runtime 目录、更新源可用性、通道、更新源 URL）；测试可用 `DSH_UC_FORCE_PLATFORM` 强制覆盖。
+  - **桌面端内核版本改由应用自己的更新源决定。** "已安装" = 打包应用版本（`app.asar/package.json`，回退 `app.asar/dsh/package.json`）；"最新" = 由 `app-update.yml`（generic provider，`nightly`）解析出的 `<url>/<channel>.yml`，用一个零依赖解析器读取（能处理更新源里 `url: >-` 这类折叠标量块）。web 侧不变（仍走 npm/GitHub），桌面端此前"`installed: null`"的错报随之消失。
+  - **桌面端更新是"转交"，不是"代做"。** 桌面端 `POST /update` 返回 `409 E_DESKTOP_OWNED`，带 `action: "open-native-update"`、目标版本与通道，且既不写更新锁也不写进度记录——插件不能、也不该对签名应用内的 `app.asar` 做 npm 覆盖安装。`/rollback` 同理返回 `409`（打包内核没有插件管辖的备份）。
+  - **桌面端重启按设计走手动。** `/restart` 返回 `409 E_DESKTOP_RESTART_MANUAL` 并给出指引，而不是杀掉由 Electron 监管的 Host（托盘菜单 →「退出 DeepSeek Harness」→ 重新打开）；设置面板在原来"重启服务"的位置显示同一份指引。
+  - **桌面端包管理器。** 锁定文件同步优先使用应用自带的 pnpm（桌面端宿主 `argv[5]`，以 `Electron --expose-internals` + `ELECTRON_RUN_AS_NODE=1`、`DSH_DESKTOP_NODE_EXECUTABLE` 与自带 `runtime/bin` 前置 PATH 的方式启动），该调用失败时退回探测到的 pnpm；npm 维持原有解析逻辑，桌面端在找不到真实 Node 时用 Electron 可执行文件充当 Node。插件暂存安装仍优先用 npm，机器上没有 npm 时退回自带 pnpm（`pnpm add --dir` / `pnpm install --dir --prod`，构建脚本走 `pnpm rebuild`）。
+  - **客户端识别。** 覆盖层会识别 `dsh-app://` 来源与 `window.dshDesktop.updates`：桌面端把**打开更新窗口**作为主按钮（绝不显示 npm 安装按钮），订阅 Electron 更新状态在横幅里显示下载/校验/安装进度；web 端的 npm 确认与更新流程保持不变。设置区会显示桌面端运行时、通道与更新源，隐藏预发布开关与下载源选择，插件更新结果提示"重启桌面端应用后生效"。
+  - **挂载不再能把真实安装降级。** `ensurePluginMount()` 会把各 profile 里的插件副本换成指向"当前运行实例"的链接；此前它对"真实目录"是无条件替换的，于是某个 profile 里更新的真实副本（1.7.0）会被静默换成指向更旧共享副本（1.4.23）的链接。现在 `linkPackageIntoProfile()` 在替换真实目录前先比版本，目标更新即拒绝（`conflict: "downgrade"`，写进 mount 的 errors，磁盘不动）；相等或更新的源仍按原逻辑去重。
+  - **测试**：`node --test "scripts/*.test.mjs"` **293** 项全过，新增 `scripts/unit-desktop-runtime.test.mjs`（web/Electron/argv/强制覆盖各情形的判定、真实 `app-update.yml` 与更新源文本的解析、更新源 URL 拼接、pnpm 暂存参数）、`scripts/integration-desktop-host.test.mjs`（本地 HTTP 更新源 + 真实路由处理器：桌面端状态与版本、`E_DESKTOP_OWNED` 且不产生锁/进度文件、重启指引、回滚拒绝、`plugins.json` 带平台字段）、`scripts/integration-client-desktop.test.mjs`（用假 React 经模块加载器渲染真实覆盖层组件：桌面端渲染原生动作、`downloading` 状态渲染 42% 进度、web 端仍 POST `/update`）与 `scripts/integration-mount-guard.test.mjs`（旧源对新真实副本 → 拒绝且目标不变；新源对旧副本 → 照常去重；预发布目标仍算更新）。另外 `scripts/test-client-apply.mjs` 里有一条对 worker 进度的陈旧断言，在未改动的 1.7.0 上就已经失败；现改为校验 worker 各里程碑百分比单调不减。
+
+  - **已在真实环境验证** —— 本版本在真正的 Electron-as-node 进程内（`DeepSeek Harness.exe` 44.0.0 + 已安装应用的 `resources`）跑镜像 profile：**24/24** 项通过，包括从签名 `app.asar` 读出 `installed = 0.2.0-rc.2`、从 `https://download.deepseek.com/dsh-desk/feeds/win-x64/nightly.yml` 实时取到 `latest = 0.2.0-rc.2`、`channel = nightly`、`/update` → `409 E_DESKTOP_OWNED` 且不产生更新锁、进度记录或备份目录、`/restart` → `409 E_DESKTOP_RESTART_MANUAL` 并带指引、`/rollback` → `409`。同一份构建在普通 Node 进程里仍报 `platform: web`、`source: npm`，走原有 npm/部署树路径（9/9 项通过）。
 
 - **v1.7.0** — 修复 1.6.4 上报告的四个 Windows 更新失败，全部从根因处改（issue #34 #35 #36 #37）：
   - **自带 `skills/` 的插件在 DSH 运行期间也能更新（#37）。** `swapDirectoryInPlace()` 用 `rename(dst → trash)` 替换插件，而 Windows 规定「目录子树内存在**任何**打开句柄时该目录不可重命名」——运行中的宿主恰好对 `<插件>/skills` 常驻目录句柄，于是这类更新必然以裸 `EPERM` 失败，重试永远不会成功（报告者用 `MoveFileExW` 做了完整规则矩阵与 A/B 对照）。现在 swap 会识别这类拒绝（`EPERM`/`EACCES`，与可重试的瞬时 `EBUSY` 区分），降级为**原地文件级同步**：把暂存内容逐文件覆盖到目标、删除新版本已去掉的条目，**绝不重命名或删除被监视的目录本身**，清理不掉的条目记为 leftover 而不再让整次更新失败；没有句柄阻挡时仍走原来的 rename 交换。若原地同步也失败，则从交换前的备份还原并说明原因（技能目录被宿主占用 → 关闭 DSH 后用命令行更新）。结果与 ops 日志新增 `installMode`（`swap` / `in-place`）与 leftover 计数。
@@ -137,13 +161,6 @@ New-Item -ItemType Junction `
   - **下载超时保留。** `httpGetBuffer()` 在 20 秒无数据或单次尝试超限时中止，按 60/90/180 秒递增上限重试三次，且绝不复用连接——实测到与 registry 的长 keep-alive 连接会退化到单个包耗时 10–20 分钟。
   - **测试**：`node --test "scripts/*.test.mjs"` 244 项全过，其中新增 `scripts/integration-tarball-closure.test.mjs`（本地 mock registry，覆盖新增包、传递新增包、`@scope` 新目录、严格上下文升级、平台与构建脚本跳过、注册表不可达回退，以及"抽掉一个包后完整性校验必须失败"）与 `scripts/unit-tarball-timeout.test.mjs`（空闲/单次尝试超时、体积上限、HTTP 状态、不复用连接、下载并发上限）。并在**真实注册表**上用一棵恰好抽掉那 8 个包的树复核：计划恰好命中这 8 个包，12 个 tarball 全部解压且版本逐一相符，`verifyTree()` 报 0 问题。
 
-- **v1.6.3** — 升级后重启看得见、进度条按包数走、npm 探测覆盖发行版布局（issue #30 #31 #32）：
-  - **主程序升级后不再留下无控制台孤儿进程。** `startService()` 原以 `detached: true` + `stdio: "ignore"` + `windowsHide: true` 拉起服务——一个没有控制台的隐形实例：它活过更新 worker、继续占着 Web 端口，启动时打印的访问地址/token 随 stdout 一起丢弃；下次启动就会撞 `listen EADDRINUSE 127.0.0.1:3080`，并炸出一片「N required plugins did not activate」（`webserver` 是 required，整个插件图都组不起来）。现在重启优先走部署自带的启动器（`DSH_UC_LAUNCHER` / `DSH_RESTART_LAUNCHER` / `DeepSeek Harness.cmd` / `start-dsh.cmd` …）且**带可见窗口**；没有启动器时退回 `node … bin.js web`，同样可见，并在 ops 日志记下 `main-update-service-restart`。
-  - **进度条改为「已下载包数 / 总包数」。** 不再用依赖树时间爬坡、也不数 npm 的 HTTP 行（含元数据，会跑到真实进度前面）。下载/安装期间百分比 = `round(已完成 / 总数 * 100)`：200 个包下到 100 个就是 50%，198 个就是 99%；详情写「已下载 137/273 个包（50%）」。总数取自 npm dry-run 的「added N packages」或 lockfile；tarball 回退路径按已下载 tarball 同样计算。进度条不再回退，100% 留给「已完成」。
-  - **发行版布局与 shim 安装也能找到 npm（#30 #32）。** `npmCliCandidates()` 新增 `node_modules_<major>`（Fedora/RHEL 的 `nodejs24-npm`）、`/usr/lib`、`/usr/local/lib`、`/opt/homebrew/lib`、`/usr/local/opt/npm/lib` 与 `$npm_config_prefix`；`locateNpmCli()` 在放弃前会依次解析 `PATH` 上的每个 `npm`/`npm.cmd`（以及 shim 背后的真实目标），`ENPMCLI` 报错也列出搜索过的布局与 `DSH_UC_NODE_EXE` 逃生口。桌面端 App 若**完全没有** npm，插件更新仍无法进行——那需要安装 Node/npm 或等应用内 tarball 安装器（见 #32）。
-  - **插件清单只读「正在运行的那个 profile」（#31）。** `findCompositionFile()` 以前在无法判定时默认 `profiles/web/cordis.patch.yml`，于是宿主跑在别的 profile（桌面端的 `desktop`）时，面板读的是**另一个** profile 的 `node_modules`——永远显示 `dshmarket 1.60.0 → 1.65.0`，而运行中的 profile 已经是 1.65.0。现在 composition 与其 `node_modules` 先按 `DSH_PROFILE_DIR` / `DSH_PROFILE` 解析，并校验它属于本安装的 profiles 根。
-  - **测试**：`node --test "scripts/*.test.mjs"` 230 项全过，新增覆盖包数进度映射、npm fetch 解析、启动器选择与可见性、运行中 profile 解析、Fedora `node_modules_<major>` 布局；进度 E2E 时间线按新契约断言。
-
 ## 开发
 
 - `lib/index.js` — Host 半身：纯 ESM，仅依赖 Node 内置模块，无构建步骤；纯函数以命名 ESM 导出暴露，供单元测试。
@@ -154,3 +171,4 @@ New-Item -ItemType Junction `
 ## 许可证
 
 MIT
+
