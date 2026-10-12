@@ -29,6 +29,9 @@ let home;
 let profileNodeModules;
 let server;
 let feedHits = 0;
+let feedRequests = [];
+let feedBase = null;
+let expectedFeedPath = null;
 let plugin;
 
 function makeReq(url, body) {
@@ -85,7 +88,9 @@ before(async () => {
   );
 
   server = createServer((req, res) => {
-    if (String(req.url).endsWith("/nightly.yml")) {
+    const url = String(req.url);
+    feedRequests.push(url);
+    if (/\/nightly(?:-mac|-linux)?\.yml$/.test(url)) {
       feedHits += 1;
       res.writeHead(200, { "content-type": "text/yaml" });
       res.end(FEED);
@@ -96,6 +101,9 @@ before(async () => {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
+  feedBase = `http://127.0.0.1:${port}/feeds/win-x64/`;
+  const channelFile = process.platform === "darwin" ? "nightly-mac.yml" : process.platform === "linux" ? "nightly-linux.yml" : "nightly.yml";
+  expectedFeedPath = `/feeds/win-x64/${channelFile}`;
 
   await writeFile(
     join(resourcesDir, "app-update.yml"),
@@ -161,7 +169,8 @@ test("desktop host: status.json reports the desktop feed and the installed app v
   assert.equal(status.json.desktop.provider, "generic");
   assert.equal(status.json.desktop.managedBy, "electron");
   assert.equal(status.json.desktop.appVersion, DESKTOP_VERSION);
-  assert.match(status.json.desktop.feedUrl, /\/feeds\/win-x64\/nightly\.yml$/);
+  assert.equal(status.json.desktop.feedUrl, feedBase + expectedFeedPath.split("/").pop());
+  assert.equal(feedRequests[0], expectedFeedPath);
   assert.equal(status.json.runtime.platform, "desktop");
   assert.equal(status.json.runtime.managedBy, "electron");
   assert.equal(status.json.runtime.updateSourceAvailable, true);

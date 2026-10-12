@@ -144,15 +144,15 @@ test("parseDesktopFeed: literal block scalars and empty input", () => {
 
 test("desktopFeedUrl: channel file under a trailing-slash base", () => {
   assert.equal(
-    desktopFeedUrl("https://download.deepseek.com/dsh-desk/feeds/win-x64/", "nightly"),
+    desktopFeedUrl("https://download.deepseek.com/dsh-desk/feeds/win-x64/", "nightly", "win32"),
     "https://download.deepseek.com/dsh-desk/feeds/win-x64/nightly.yml"
   );
   assert.equal(
-    desktopFeedUrl("https://download.deepseek.com/dsh-desk/feeds/win-x64", "nightly"),
+    desktopFeedUrl("https://download.deepseek.com/dsh-desk/feeds/win-x64", "nightly", "win32"),
     "https://download.deepseek.com/dsh-desk/feeds/win-x64/nightly.yml"
   );
-  assert.equal(desktopFeedUrl("https://example.test/f/", null), "https://example.test/f/latest.yml");
-  assert.equal(desktopFeedUrl("", "nightly"), null);
+  assert.equal(desktopFeedUrl("https://example.test/f/", null, "win32"), "https://example.test/f/latest.yml");
+  assert.equal(desktopFeedUrl("", "nightly", "win32"), null);
 });
 
 test("pnpm staging arguments exist for the bundled desktop package manager", () => {
